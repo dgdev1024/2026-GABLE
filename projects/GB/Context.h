@@ -25,6 +25,20 @@
 typedef struct gbContext gbContext;
 
 /**
+ * @brief   Defines an opaque structure representing a Game Boy cartridge
+ *          device.
+ * 
+ * This structure encapsulates the ROM and RAM data, as well as any other
+ * hardware features (such as memory bank controllers) found in a Game Boy
+ * cartridge device.
+ * 
+ * The cartridge is an external component which is attached to the Game Boy
+ * Emulator Core context. Its memory is not managed by the core context itself,
+ * and will need to be freed separately when no longer needed.
+ */
+typedef struct gbCartridge gbCartridge;
+
+/**
  * @brief   Defines a pointer to a function called by the Game Boy Emulator Core
  *          context when a read operation is attempted on its emulated, 16-bit
  *          address bus.
@@ -220,6 +234,29 @@ GB_API bool gbDestroyContext (gbContext* context);
  *          context exists, returns `false`.
  */
 GB_API bool gbInitializeContext (gbContext* context);
+
+/* Public Function Declarations - Cartridge ***********************************/
+
+/**
+ * @brief   Attaches a cartridge device to the given Game Boy Emulator Core
+ *          context.
+ * 
+ * Attaching (or detaching) a cartridge device causes the context and its
+ * components to reset their states as if the system had been powered on or reset.
+ * 
+ * @param   context     A pointer to the @a `gbContext` structure to which to
+ *                      attach the cartridge. Pass `nullptr` to use the current
+ *                      context.
+ * @param   cartridge   A pointer to the @a `gbCartridge` structure representing
+ *                      the cartridge device to be attached. Pass `nullptr` to
+ *                      detach any currently attached cartridge.
+ * 
+ * @return  If successful, returns `true`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `false`.
+ */
+GB_API bool gbAttachCartridge (gbContext* context,
+    gbCartridge* cartridge);
 
 /* Public Function Declarations - Current Context *****************************/
 

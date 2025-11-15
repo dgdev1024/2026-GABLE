@@ -8,6 +8,7 @@
 
 /* Private Includes ***********************************************************/
 
+#include <GB/Cartridge.h>
 #include <GB/Context.h>
 
 /* Private Unions and Structures **********************************************/
@@ -15,11 +16,14 @@
 struct gbContext
 {
     // Userdata
-    void*                userdata;
+    void*               userdata;
 
     // Callbacks
-    gbBusReadCallback    busReadCallback;
-    gbBusWriteCallback   busWriteCallback;
+    gbBusReadCallback   busReadCallback;
+    gbBusWriteCallback  busWriteCallback;
+
+    // Components
+    gbCartridge*        cartridge;
 };
 
 /* Private Static Variables ***************************************************/
@@ -60,6 +64,19 @@ bool gbInitializeContext (gbContext* context)
         "No valid 'gbContext' provided, and no current context is set.");
 
     return true;
+}
+
+/* Public Functions - Cartridge ***********************************************/
+
+bool gbAttachCartridge (gbContext* context, gbCartridge* cartridge)
+{
+    gbFallback(context, gbGetCurrentContext());
+    gbCheckv(context != nullptr, false,
+        "No valid 'gbContext' provided, and no current context is set.");
+
+    // - Attach the cartridge to the context, then re-initialize the context.
+    context->cartridge = cartridge;
+    return gbInitializeContext(context);
 }
 
 /* Public Functions - Current Context *****************************************/
@@ -129,15 +146,19 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
     gbCheckv(outValue != nullptr, false,
         "No valid output pointer provided for read value.");
 
-    // - Store the read value here.
+    // - Store the read value and result here.
     uint8_t value = 0xFF;
+    bool result = false;
 
     // - Check address range and read from appropriate component.
     //
     // - `$0000` - `$7FFF`: Attached catridge device ROM
     if (address <= GB_ROMX_END)
     {
-
+        if (context->cartridge != nullptr)
+        {
+            result = gbReadCartridgeROM(context->cartridge, address, &value);
+        }
     }
 
     // - `$8000` - `$9FFF`: Video RAM
@@ -149,7 +170,11 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
     // - `$A000` - `$BFFF`: Attached cartridge device RAM
     else if (address >= GB_EXTRAM_START && address <= GB_EXTRAM_END)
     {
-
+        if (context->cartridge != nullptr)
+        {
+            result = gbReadCartridgeRAM(context->cartridge, 
+                address - GB_EXTRAM_START, &value);
+        }
     }
 
     // - `$C000` - `$DFFF`: Work RAM
@@ -255,7 +280,7 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
     }
 
     *outValue = value;
-    return true;
+    return result;
 }
 
 bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value, 
@@ -265,15 +290,20 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
     gbCheckv(context != nullptr, false,
         "No valid 'gbContext' provided, and no current context is set.");
 
-    // - Store the actual written value here.
+    // - Store the actual written value and result here.
     uint8_t actual = 0xFF;
+    bool result = false;
     
     // - Check address range and write to appropriate component.
     //
     // - `$0000` - `$7FFF`: Attached catridge device ROM
     if (address <= GB_ROMX_END)
     {
-
+        if (context->cartridge != nullptr)
+        {
+            result = gbWriteCartridgeROM(context->cartridge, address, value, 
+                &actual);
+        }
     }
 
     // - `$8000` - `$9FFF`: Video RAM
@@ -285,7 +315,11 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
     // - `$A000` - `$BFFF`: Attached cartridge device RAM
     else if (address >= GB_EXTRAM_START && address <= GB_EXTRAM_END)
     {
-
+        if (context->cartridge != nullptr)
+        {
+            result = gbWriteCartridgeRAM(context->cartridge, 
+                address - GB_EXTRAM_START, value, &actual);
+        }
     }
 
     // - `$C000` - `$DFFF`: Work RAM
@@ -395,5 +429,5 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         *outActual = actual;
     }
 
-    return true;
+    return result;
 }

@@ -53,7 +53,7 @@ namespace gbmu
 namespace gbmu
 {
 
-    Application::Application ()
+    Application::Application (int argc, char** argv)
     {
         // - Create the Game Boy Emulator Core context.
         m_gb = gbCreateContext();
@@ -80,6 +80,9 @@ namespace gbmu
 
         // - Initialize ImGui-SFML.
         m_imguiInit = ImGui::SFML::Init(m_window);
+
+        // - Parse command-line arguments.
+        parseArguments(argc, argv);
     }
 
     Application::~Application ()
@@ -89,6 +92,7 @@ namespace gbmu
 
         // - Destroy the Game Boy Emulator Core context.
         gbDestroyContext(m_gb);
+        gbDestroyCartridge(m_cart);
     }
 
     auto Application::start () -> int32_t
@@ -167,7 +171,14 @@ namespace gbmu
     auto Application::onGUI (const sf::Time& deltaTime) -> void
     {
         ImGui::SFML::Update(m_window, deltaTime);
-        ImGui::ShowDemoWindow();
+        ImGui::DockSpaceOverViewport();
+
+        showMenuBar();
+        
+        if (m_showDemoWindow)
+        {
+            ImGui::ShowDemoWindow(&m_showDemoWindow);
+        }
     }
 
     auto Application::onRender (const uint32_t* framebuffer) -> void
@@ -176,6 +187,69 @@ namespace gbmu
 
         ImGui::SFML::Render(m_window);
         m_window.display();
+    }
+
+}
+
+/* Private Methods - Utility Functions ****************************************/
+
+namespace gbmu
+{
+
+    auto Application::loadCartridge (const std::string& filepath) -> bool
+    {
+        gbCartridge* cart = gbCreateCartridge(filepath.c_str());
+        if (cart == nullptr)
+        {
+            pfd::message(
+                "Error Loading Cartridge",
+                std::format("Could not load cartridge from file '{}'.", filepath),
+                pfd::choice::ok,
+                pfd::icon::error
+            );
+
+            return false;
+        }
+        
+        gbAttachCartridge(m_gb, cart);
+        gbDestroyCartridge(m_cart);
+        m_cart = cart;
+
+        const auto header = gbGetCartridgeHeader(m_cart);
+        const char* title = gbGetCartridgeTitle(header);
+        m_window.setTitle(
+            std::format(
+                "{} - [{}] - GABLE Game Boy Emulator Frontend",
+                title != nullptr ? title : "Untitled Cartridge",
+                filepath
+            )
+        );
+
+        return true;
+    }
+
+    auto Application::unloadCartridge () -> void
+    {
+        gbAttachCartridge(m_gb, nullptr);
+        gbDestroyCartridge(m_cart);
+        m_cart = nullptr;
+
+        m_window.setTitle("GABLE Game Boy Emulator Frontend");
+    }
+
+    auto Application::parseArguments (int argc, char** argv) -> void
+    {
+        // -r <path>, --rom <path> : Load the specified ROM file.
+        for (int i = 1; i < argc; ++i)
+        {
+            std::string arg = argv[i];
+
+            if ((arg == "-r" || arg == "--rom") && (i + 1) < argc)
+            {
+                std::string romPath = argv[++i];
+                loadCartridge(romPath);
+            }
+        }
     }
 
 }

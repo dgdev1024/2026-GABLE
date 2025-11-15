@@ -15,6 +15,7 @@ extern "C" {
 /* Public Includes ************************************************************/
 
 #include <GB/Context.h>
+#include <GB/Cartridge.h>
 
 #if defined(__cplusplus)
 } // extern "C"

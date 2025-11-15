@@ -24,7 +24,7 @@ namespace gbmu
     {
     public: /* Public Methods *************************************************/
     
-        Application ();
+        Application (int argc, char** argv);
         ~Application ();
         auto start () -> int32_t;
 
@@ -44,12 +44,32 @@ namespace gbmu
         auto onGUI (const sf::Time& deltaTime) -> void;
         auto onRender (const uint32_t* framebuffer) -> void;
 
+    private: /* Private Methods - ImGui Menu Bar ******************************/
+
+        auto showMenuBar () -> void;
+        auto showFileMenu () -> void;
+        auto showEditMenu () -> void;
+        auto showViewMenu () -> void;
+        auto showHelpMenu () -> void;
+
+    private: /* Private Methods - Dialogs *************************************/
+
+        auto showOpenCartridgeDialog () -> void;
+
+    private: /* Private Methods - Utility Functions ***************************/
+
+        auto loadCartridge (const std::string& filepath) -> bool;
+        auto unloadCartridge () -> void;
+        auto parseArguments (int argc, char** argv) -> void;
+
     private: /* Private Members ***********************************************/
 
         gbContext*           m_gb { nullptr };
+        gbCartridge*         m_cart { nullptr };
         sf::RenderWindow     m_window;
         sf::Clock            m_clock;
         bool                 m_imguiInit { false };
+        bool                 m_showDemoWindow { false };
 
     };
 
