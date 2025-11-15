@@ -53,3 +53,16 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# IDEs and editors
+.vscode/
+
+# Build directories and files
+build/
+Makefile
+*.make
+*.sln
+*.vcxproj*
+
+# Testing files and directories
+roms/
