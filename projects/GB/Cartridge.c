@@ -117,8 +117,16 @@ struct gbCartridge
     uint8_t                     rtcRegisters[5];        // MBC3 with Timer only
     uint8_t                     rtcLatchedRegisters[5]; // MBC3 with Timer only
     bool                        rtcLatchPrimed;         // MBC3 with Timer only
+    uint8_t                     rtcLatchValue;          // MBC3 with Timer only
     time_t                      rtcLastUpdated;         // MBC3 with Timer only
+    bool                        rtcHalted;              // MBC3 with Timer only
+    uint16_t                    rtcDayCounter;          // MBC3 with Timer only
+    bool                        rtcCarryBit;            // MBC3 with Timer only
 };
+
+/* Private Function Declarations - Helper Functions ***************************/
+
+static void gbUpdateMBC3RTC (gbCartridge* cartridge);
 
 /* Private Function Declarations - Read ROM ***********************************/
 
@@ -187,6 +195,77 @@ static bool gbValidateMBC5 (gbCartridge* cartridge,
 static bool gbValidateCartridgeHeader (gbCartridge* cartridge, 
     const gbCartridgeHeader* header);
 
+/* Private Function Definitions - Helper Functions ****************************/
+
+void gbUpdateMBC3RTC (gbCartridge* cartridge)
+{
+    gbAssert(cartridge != nullptr);
+
+    // - Only update if the cartridge has a timer.
+    if (!cartridge->hasTimer)
+    {
+        return;
+    }
+
+    // - Check if the RTC is halted (bit 6 of DH register).
+    if (cartridge->rtcHalted)
+    {
+        return;
+    }
+
+    // - Calculate elapsed time since last update.
+    time_t currentTime = time(nullptr);
+    time_t elapsedSeconds = currentTime - cartridge->rtcLastUpdated;
+    cartridge->rtcLastUpdated = currentTime;
+
+    // - Update RTC registers.
+    while (elapsedSeconds > 0)
+    {
+        // - Increment seconds.
+        cartridge->rtcRegisters[0]++;
+        if (cartridge->rtcRegisters[0] >= 60)
+        {
+            cartridge->rtcRegisters[0] = 0;
+
+            // - Increment minutes.
+            cartridge->rtcRegisters[1]++;
+            if (cartridge->rtcRegisters[1] >= 60)
+            {
+                cartridge->rtcRegisters[1] = 0;
+
+                // - Increment hours.
+                cartridge->rtcRegisters[2]++;
+                if (cartridge->rtcRegisters[2] >= 24)
+                {
+                    cartridge->rtcRegisters[2] = 0;
+
+                    // - Increment day counter (9-bit: DL + bit 0 of DH).
+                    cartridge->rtcDayCounter++;
+                    if (cartridge->rtcDayCounter > 0x1FF)
+                    {
+                        // - Day counter overflow: set carry bit (bit 7 of DH).
+                        cartridge->rtcDayCounter = 0;
+                        cartridge->rtcCarryBit = true;
+                    }
+
+                    // - Update DL and DH registers from day counter.
+                    cartridge->rtcRegisters[3] = 
+                        (uint8_t) (cartridge->rtcDayCounter & 0xFF);
+                    
+                    // - Reconstruct DH: bit 0 = day counter bit 8, bit 6 = halt, 
+                    //   bit 7 = carry.
+                    cartridge->rtcRegisters[4] = 
+                        ((cartridge->rtcDayCounter >> 8) & 0x01) |
+                        (cartridge->rtcHalted ? 0x40 : 0x00) |
+                        (cartridge->rtcCarryBit ? 0x80 : 0x00);
+                }
+            }
+        }
+
+        elapsedSeconds--;
+    }
+}
+
 /* Private Function Definitions - Read ROM ************************************/
 
 bool gbReadBasicCartridgeROM (const gbCartridge* cartridge,
@@ -207,7 +286,55 @@ bool gbReadMBC1CartridgeROM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - Calculate the maximum bank number based on ROM size
+    size_t maxBankNumber = (cartridge->romSize / GB_ROM_BANK_SIZE) - 1;
+    size_t bankMask = maxBankNumber;
+    
+    // - `$0000 - $3FFF`: See below
+    if (address < GB_ROM_BANK_SIZE)
+    {
+        // - If RAM banking mode is disabled, this area always maps to ROM bank 0.
+        if (!cartridge->ramBankingEnabled)
+        {
+            *outValue = cartridge->romData[address];
+        }
+
+        // - If RAM banking mode is enabled (mode 1), this area maps to the ROM bank
+        //   selected by the secondary 2-bit register (ramBankNumber), allowing
+        //   access to banks $00/$20/$40/$60 (or $00/$10/$20/$30 for MBC1M).
+        else
+        {
+            uint8_t bankNumber = (cartridge->ramBankNumber << 5) & bankMask;
+            size_t bankOffset = bankNumber * GB_ROM_BANK_SIZE;
+            *outValue = cartridge->romData[bankOffset + address];
+        }
+    }
+
+    // - `$4000 - $7FFF`: Switchable ROM bank area.
+    else if (address < (GB_ROM_BANK_SIZE * 2))
+    {
+        // - Combine the 5-bit ROM bank register with the 2-bit secondary register
+        //   for large ROMs: Selected ROM Bank = (Secondary Bank << 5) + ROM Bank
+        uint8_t bankNumber = (cartridge->ramBankNumber << 5) | 
+            (cartridge->romBankNumber & 0x1F);
+        
+        if ((cartridge->romBankNumber & 0x1F) == 0x00)
+        {
+            // - ROM banks `0x00`, `0x20`, `0x40` and `0x60` are not allowed
+            //   and thereby map to the next valid bank ($01/$21/$41/$61).
+            //   This check uses only the lower 5 bits of the ROM bank register.
+            bankNumber |= 0x01;
+        }
+
+        // - Mask the bank number to the actual number of banks available
+        bankNumber &= bankMask;
+
+        size_t bankOffset = bankNumber * GB_ROM_BANK_SIZE;
+        size_t relativeAddress = address - GB_ROM_BANK_SIZE;
+        *outValue = cartridge->romData[bankOffset + relativeAddress];
+    }
+
+    return true;
 }
 
 bool gbReadMBC2CartridgeROM (const gbCartridge* cartridge,
@@ -216,7 +343,31 @@ bool gbReadMBC2CartridgeROM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - `$0000 - $3FFF`: Fixed ROM bank 0
+    if (address < GB_ROM_BANK_SIZE)
+    {
+        *outValue = cartridge->romData[address];
+    }
+
+    // - `$4000 - $7FFF`: Switchable ROM bank 0x01-0x0F (4-bit bank number).
+    //   MBC2 supports only 16 ROM banks (max 256KB ROM).
+    else if (address < (GB_ROM_BANK_SIZE * 2))
+    {
+        // - ROM bank number is stored in lower 4 bits of romBankNumber
+        uint8_t bankNumber = cartridge->romBankNumber & 0x0F;
+        
+        // - Bank 0 is not allowed and maps to bank 1 (handled in write function)
+        // - Mask to actual ROM size
+        size_t maxBankNumber = (cartridge->romSize / GB_ROM_BANK_SIZE) - 1;
+        if (maxBankNumber > 0x0F) maxBankNumber = 0x0F;  // MBC2 max is 15
+        bankNumber &= maxBankNumber;
+
+        size_t bankOffset = bankNumber * GB_ROM_BANK_SIZE;
+        size_t relativeAddress = address - GB_ROM_BANK_SIZE;
+        *outValue = cartridge->romData[bankOffset + relativeAddress];
+    }
+
+    return true;
 }
 
 bool gbReadMBC3CartridgeROM (const gbCartridge* cartridge,
@@ -225,7 +376,22 @@ bool gbReadMBC3CartridgeROM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - `$0000 - $3FFF`: Fixed ROM bank 0
+    if (address < GB_ROM_BANK_SIZE)
+    {
+        *outValue = cartridge->romData[address];
+    }
+
+    // - `$4000 - $7FFF`: Switchable ROM bank area.
+    else if (address < (GB_ROM_BANK_SIZE * 2))
+    {
+        uint8_t bankNumber = (cartridge->romBankNumber & 0x7F);
+        size_t bankOffset = bankNumber * GB_ROM_BANK_SIZE;
+        size_t relativeAddress = address - GB_ROM_BANK_SIZE;
+        *outValue = cartridge->romData[bankOffset + relativeAddress];
+    }
+
+    return true;
 }
 
 bool gbReadMBC5CartridgeROM (const gbCartridge* cartridge,
@@ -234,7 +400,36 @@ bool gbReadMBC5CartridgeROM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - `$0000 - $3FFF`: Fixed ROM bank 0
+    if (address < GB_ROM_BANK_SIZE)
+    {
+        *outValue = cartridge->romData[address];
+    }
+
+    // - `$4000 - $7FFF`: Switchable ROM bank 0x00-0x1FF (9-bit bank number).
+    //   Note: MBC5 allows bank 0 to be selected (unlike MBC1/MBC3).
+    else if (address < (GB_ROM_BANK_SIZE * 2))
+    {
+        // - Combine romBankNumber (lower 8 bits) with ramBankingEnabled flag
+        //   (used to store the 9th bit for MBC5).
+        // - For proper MBC5 support, romBankNumber should ideally be uint16_t,
+        //   but we work with the existing structure.
+        uint16_t bankNumber = cartridge->romBankNumber;
+        if (cartridge->ramBankingEnabled)
+        {
+            bankNumber |= 0x100;  // Set bit 8 if flag is set
+        }
+
+        // - Mask to actual ROM size
+        size_t maxBankNumber = (cartridge->romSize / GB_ROM_BANK_SIZE) - 1;
+        bankNumber &= maxBankNumber;
+
+        size_t bankOffset = bankNumber * GB_ROM_BANK_SIZE;
+        size_t relativeAddress = address - GB_ROM_BANK_SIZE;
+        *outValue = cartridge->romData[bankOffset + relativeAddress];
+    }
+
+    return true;
 }
 
 /* Private Function Definitions - Read RAM ************************************/
@@ -259,7 +454,40 @@ bool gbReadMBC1CartridgeRAM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - If RAM is disabled, read returns 0xFF.
+    if (!cartridge->ramEnabled)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    // - If there is no RAM, read returns 0xFF.
+    if (cartridge->ramData == nullptr)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    // - If RAM banking mode is disabled (mode 0), this area always maps to RAM 
+    //   bank 0.
+    // - Also, RAM banking only works with 32KB RAM (4 banks). Smaller RAM sizes
+    //   always use bank 0.
+    if (!cartridge->ramBankingEnabled || cartridge->ramSize <= GB_EXTRAM_SIZE)
+    {
+        *outValue = cartridge->ramData[address];
+    }
+
+    // - If RAM banking mode is enabled (mode 1) and RAM is 32KB, this area maps
+    //   to the RAM bank selected by the secondary 2-bit register (ramBankNumber).
+    else
+    {
+        size_t maxRamBank = (cartridge->ramSize / GB_EXTRAM_SIZE) - 1;
+        size_t bankNumber = cartridge->ramBankNumber & maxRamBank;
+        size_t bankOffset = bankNumber * GB_EXTRAM_SIZE;
+        *outValue = cartridge->ramData[bankOffset + address];
+    }
+
+    return true;
 }
 
 bool gbReadMBC2CartridgeRAM (const gbCartridge* cartridge,
@@ -268,7 +496,30 @@ bool gbReadMBC2CartridgeRAM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - If RAM is disabled, read returns 0xFF.
+    if (!cartridge->ramEnabled)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    // - MBC2 has built-in RAM (512 × 4-bit values, 512 bytes total).
+    // - Only the lower 9 bits of the address are used, so RAM repeats every 512 bytes.
+    // - Address range A000-BFFF repeats 16 times (A000-A1FF, A200-A3FF, etc.)
+    // - Only the lower 4 bits of each byte are used; upper 4 bits are undefined.
+    if (cartridge->ramData == nullptr)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    size_t ramAddress = address & 0x01FF;  // Lower 9 bits (0-511)
+    uint8_t value = cartridge->ramData[ramAddress];
+    
+    // - Only lower 4 bits are valid; upper 4 bits are undefined (we return them as 0xF)
+    *outValue = (value & 0x0F) | 0xF0;
+
+    return true;
 }
 
 bool gbReadMBC3CartridgeRAM (const gbCartridge* cartridge,
@@ -277,7 +528,43 @@ bool gbReadMBC3CartridgeRAM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - If RAM/RTC access is disabled, read returns 0xFF.
+    if (!cartridge->ramEnabled)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    // - If an RTC register is selected, read from the latched RTC registers.
+    if (cartridge->ramBankNumber >= 0x08 &&
+        cartridge->ramBankNumber <= 0x0C)
+    {
+        // - Update the real RTC before reading (only affects non-latched registers).
+        gbUpdateMBC3RTC((gbCartridge*)cartridge);
+        
+        uint8_t rtcIndex = cartridge->ramBankNumber - 0x08;
+        *outValue = cartridge->rtcLatchedRegisters[rtcIndex];
+        return true;
+    }
+
+    // - If a RAM bank is selected, read from the RAM.
+    if (cartridge->ramBankNumber <= 0x03)
+    {
+        // - If there is no RAM, read returns 0xFF.
+        if (cartridge->ramData == nullptr)
+        {
+            *outValue = 0xFF;
+            return true;
+        }
+
+        size_t maxRamBank = (cartridge->ramSize / GB_EXTRAM_SIZE) - 1;
+        size_t bankNumber = cartridge->ramBankNumber & maxRamBank;
+        size_t bankOffset = bankNumber * GB_EXTRAM_SIZE;
+        *outValue = cartridge->ramData[bankOffset + address];
+        return true;
+    }
+
+    return true;
 }
 
 bool gbReadMBC5CartridgeRAM (const gbCartridge* cartridge,
@@ -286,7 +573,37 @@ bool gbReadMBC5CartridgeRAM (const gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outValue != nullptr);
 
-    return false;
+    // - If RAM is disabled, read returns 0xFF.
+    if (!cartridge->ramEnabled)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    // - If there is no RAM, read returns 0xFF.
+    if (cartridge->ramData == nullptr)
+    {
+        *outValue = 0xFF;
+        return true;
+    }
+
+    // - MBC5 supports RAM banks 0x00-0x0F (4 bits).
+    //   For rumble cartridges, bit 3 of ramBankNumber controls the rumble motor,
+    //   so only bits 0-2 are used for RAM banking (0x00-0x07).
+    size_t maxRamBank = (cartridge->ramSize / GB_EXTRAM_SIZE) - 1;
+    size_t bankNumber = cartridge->ramBankNumber & 0x0F;  // 4-bit bank number
+    
+    // - For rumble cartridges, mask to 3 bits instead of 4
+    if (cartridge->hasRumble)
+    {
+        bankNumber &= 0x07;
+    }
+    
+    bankNumber &= maxRamBank;
+    size_t bankOffset = bankNumber * GB_EXTRAM_SIZE;
+    *outValue = cartridge->ramData[bankOffset + address];
+
+    return true;
 }
 
 /* Private Function Definitions - Write ROM ***********************************/
@@ -309,8 +626,51 @@ bool gbWriteMBC1CartridgeROM (gbCartridge* cartridge,
 {
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
+    
+    *outActual = 0xFF;
 
-    return false;
+    // - `$0000 - $1FFF`: RAM Enable
+    if (address < 0x2000)
+    {
+        // - Write any value with `0xA` in the lower nibble to enable RAM.
+        // - Write any other value to disable RAM.
+        cartridge->ramEnabled = ((value & 0x0F) == 0x0A);
+    }
+
+    // - `$2000 - $3FFF`: ROM Bank Number (lower 5 bits)
+    else if (address < 0x4000)
+    {
+        cartridge->romBankNumber =
+            (cartridge->romBankNumber & 0b11100000) | 
+            (value & 0b00011111);
+    }
+
+    // - `$4000 - $5FFF`: RAM Bank Number or Upper Bits of ROM Bank Number
+    else if (address < 0x6000)
+    {
+        if (cartridge->ramBankingEnabled)
+        {
+            // - RAM Banking Mode: Set RAM bank number (2 bits).
+            cartridge->ramBankNumber = value & 0b00000011;
+        }
+        else
+        {
+            // - ROM Banking Mode: Set upper bits of ROM bank number (2 bits).
+            cartridge->romBankNumber =
+                (cartridge->romBankNumber & 0b00011111) |
+                ((value & 0b00000011) << 5);
+        }
+    }
+
+    // - `$6000 - $7FFF`: Banking Mode Select
+    else if (address < 0x8000)
+    {
+        // - Write `0` to select ROM Banking Mode.
+        // - Write `1` to select RAM Banking Mode.
+        cartridge->ramBankingEnabled = (value & 0x01) != 0;
+    }
+
+    return true;
 }
 
 bool gbWriteMBC2CartridgeROM (gbCartridge* cartridge,
@@ -319,7 +679,35 @@ bool gbWriteMBC2CartridgeROM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - `$0000 - $3FFF`: RAM Enable or ROM Bank Number
+    //   The function is determined by bit 8 of the address (LSB of upper byte).
+    if (address < 0x4000)
+    {
+        // - Check bit 8 of the address (address & 0x0100)
+        if ((address & 0x0100) == 0)
+        {
+            // - Bit 8 is CLEAR: RAM Enable
+            //   Write 0xA in lower 4 bits to enable RAM, anything else to disable.
+            //   Examples: $0000-00FF, $0200-02FF, $0400-04FF, ..., $3E00-3EFF
+            cartridge->ramEnabled = ((value & 0x0F) == 0x0A);
+        }
+        else
+        {
+            // - Bit 8 is SET: ROM Bank Number (4 bits: 0x01-0x0F)
+            //   Examples: $0100-01FF, $0300-03FF, $0500-05FF, ..., $3F00-3FFF
+            cartridge->romBankNumber = value & 0x0F;
+            
+            // - Writing 0 selects bank 1 instead (same as MBC1/MBC3)
+            if (cartridge->romBankNumber == 0x00)
+            {
+                cartridge->romBankNumber = 0x01;
+            }
+        }
+    }
+
+    return true;
 }
 
 bool gbWriteMBC3CartridgeROM (gbCartridge* cartridge,
@@ -328,7 +716,53 @@ bool gbWriteMBC3CartridgeROM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - `$0000 - $1FFF`: RAM and RTC Enable
+    if (address < 0x2000)
+    {
+        // - Write any value with `0xA` in the lower nibble to enable RAM/RTC.
+        // - Write any other value to disable RAM/RTC.
+        cartridge->ramEnabled = ((value & 0x0F) == 0x0A);
+    }
+
+    // - `$2000 - $3FFF`: ROM Bank Number (7 bits)
+    else if (address < 0x4000)
+    {
+        cartridge->romBankNumber = value & 0x7F;
+        if (cartridge->romBankNumber == 0x00)
+        {
+            // - ROM bank `0x00` is not allowed and thereby maps to bank `0x01`.
+            cartridge->romBankNumber = 0x01;
+        }
+    }
+
+    // - `$4000 - $5FFF`: RAM Bank Number or RTC Register Select
+    else if (address < 0x6000)
+    {
+        cartridge->ramBankNumber = value;
+    }
+
+    // - `$6000 - $7FFF`: Latch Clock Data
+    else if (address < 0x8000)
+    {
+        // - Writing `0x00` followed by `0x01` latches the RTC data into the
+        //   latched registers.
+        if (value == 0x01 && cartridge->rtcLatchPrimed)
+        {
+            // - Update the real RTC before latching.
+            gbUpdateMBC3RTC(cartridge);
+            
+            for (size_t i = 0; i < 5; ++i)
+            {
+                cartridge->rtcLatchedRegisters[i] = cartridge->rtcRegisters[i];
+            }
+        }
+
+        cartridge->rtcLatchPrimed = (value == 0x00);
+    }
+
+    return true;
 }
 
 bool gbWriteMBC5CartridgeROM (gbCartridge* cartridge,
@@ -337,7 +771,47 @@ bool gbWriteMBC5CartridgeROM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - `$0000 - $1FFF`: RAM Enable
+    if (address < 0x2000)
+    {
+        // - Write `0xA` in the lower nibble to enable RAM.
+        // - Write any other value to disable RAM.
+        cartridge->ramEnabled = ((value & 0x0F) == 0x0A);
+    }
+
+    // - `$2000 - $2FFF`: ROM Bank Number (lower 8 bits)
+    //   Note: MBC5 allows writing 0x00, and bank 0 will actually be selected.
+    else if (address < 0x3000)
+    {
+        cartridge->romBankNumber = value;
+    }
+
+    // - `$3000 - $3FFF`: ROM Bank Number (9th bit, bit 8)
+    //   We store this in the ramBankingEnabled flag as a workaround since
+    //   romBankNumber is only uint8_t.
+    else if (address < 0x4000)
+    {
+        cartridge->ramBankingEnabled = (value & 0x01) != 0;
+    }
+
+    // - `$4000 - $5FFF`: RAM Bank Number (4 bits: 0x00-0x0F)
+    //   For rumble cartridges, bit 3 controls the rumble motor.
+    else if (address < 0x6000)
+    {
+        cartridge->ramBankNumber = value & 0x0F;
+        
+        // - If this is a rumble cartridge, bit 3 controls the rumble motor.
+        //   (In a real implementation, this would activate hardware rumble)
+        if (cartridge->hasRumble)
+        {
+            // bool rumbleActive = (value & 0x08) != 0;
+            // TODO: Trigger rumble hardware if needed
+        }
+    }
+
+    return true;
 }
 
 /* Private Function Definitions - Write RAM ***********************************/
@@ -369,7 +843,41 @@ bool gbWriteMBC1CartridgeRAM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - If RAM is disabled, writes are ignored.
+    if (!cartridge->ramEnabled)
+    {
+        return true;
+    }
+
+    // - If there is no RAM, writes are ignored.
+    if (cartridge->ramData == nullptr)
+    {
+        return true;
+    }
+
+    // - If RAM banking mode is disabled (mode 0), this area always maps to RAM bank 0.
+    // - Also, RAM banking only works with 32KB RAM (4 banks). Smaller RAM sizes
+    //   always use bank 0.
+    if (!cartridge->ramBankingEnabled || cartridge->ramSize <= GB_EXTRAM_SIZE)
+    {
+        cartridge->ramData[address] = value;
+        *outActual = value;
+    }
+
+    // - If RAM banking mode is enabled (mode 1) and RAM is 32KB, this area maps
+    //   to the RAM bank selected by the secondary 2-bit register (ramBankNumber).
+    else
+    {
+        size_t maxRamBank = (cartridge->ramSize / GB_EXTRAM_SIZE) - 1;
+        size_t bankNumber = cartridge->ramBankNumber & maxRamBank;
+        size_t bankOffset = bankNumber * GB_EXTRAM_SIZE;
+        cartridge->ramData[bankOffset + address] = value;
+        *outActual = value;
+    }
+
+    return true;
 }
 
 bool gbWriteMBC2CartridgeRAM (gbCartridge* cartridge,
@@ -378,7 +886,29 @@ bool gbWriteMBC2CartridgeRAM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - If RAM is disabled, writes are ignored.
+    if (!cartridge->ramEnabled)
+    {
+        return true;
+    }
+
+    // - MBC2 has built-in RAM (512 × 4-bit values, 512 bytes total).
+    // - Only the lower 9 bits of the address are used, so RAM repeats every 512 bytes.
+    // - Only the lower 4 bits of each byte are used; upper 4 bits should be ignored.
+    if (cartridge->ramData == nullptr)
+    {
+        return true;
+    }
+
+    size_t ramAddress = address & 0x01FF;  // Lower 9 bits (0-511)
+    
+    // - Store only the lower 4 bits; upper 4 bits are ignored
+    cartridge->ramData[ramAddress] = value & 0x0F;
+    *outActual = value & 0x0F;
+
+    return true;
 }
 
 bool gbWriteMBC3CartridgeRAM (gbCartridge* cartridge,
@@ -387,7 +917,61 @@ bool gbWriteMBC3CartridgeRAM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - If RAM/RTC access is disabled, writes are ignored.
+    if (!cartridge->ramEnabled)
+    {
+        return true;
+    }
+
+    // - If an RTC register is selected, write to the RTC registers.
+    if (cartridge->ramBankNumber >= 0x08 &&
+        cartridge->ramBankNumber <= 0x0C)
+    {
+        uint8_t rtcIndex = cartridge->ramBankNumber - 0x08;
+        cartridge->rtcRegisters[rtcIndex] = value;
+        *outActual = value;
+
+        // - Special handling for DH register (index 4): extract flags and day counter bit 8.
+        if (rtcIndex == 4)
+        {
+            // - Bit 0: Day counter bit 8.
+            // - Bit 6: Halt flag (0=running, 1=stopped).
+            // - Bit 7: Carry bit (day counter overflow).
+            cartridge->rtcHalted = (value & 0x40) != 0;
+            cartridge->rtcCarryBit = (value & 0x80) != 0;
+            
+            // - Update the full 9-bit day counter from DL and DH bit 0.
+            uint16_t dayHigh = (uint16_t)(value & 0x01) << 8;
+            uint16_t dayLow = cartridge->rtcRegisters[3];
+            cartridge->rtcDayCounter = dayHigh | dayLow;
+        }
+        // - Update day counter when DL register (index 3) is written.
+        else if (rtcIndex == 3)
+        {
+            uint16_t dayHigh = (uint16_t)(cartridge->rtcRegisters[4] & 0x01) << 8;
+            cartridge->rtcDayCounter = dayHigh | value;
+        }
+    }
+
+    // - If a RAM bank is selected, write to the RAM.
+    if (cartridge->ramBankNumber <= 0x03)
+    {
+        // - If there is no RAM, writes are ignored.
+        if (cartridge->ramData == nullptr)
+        {
+            return true;
+        }
+
+        size_t maxRamBank = (cartridge->ramSize / GB_EXTRAM_SIZE) - 1;
+        size_t bankNumber = cartridge->ramBankNumber & maxRamBank;
+        size_t bankOffset = bankNumber * GB_EXTRAM_SIZE;
+        cartridge->ramData[bankOffset + address] = value;
+        *outActual = value;
+    }
+
+    return true;
 }
 
 bool gbWriteMBC5CartridgeRAM (gbCartridge* cartridge,
@@ -396,7 +980,38 @@ bool gbWriteMBC5CartridgeRAM (gbCartridge* cartridge,
     gbAssert(cartridge != nullptr);
     gbAssert(outActual != nullptr);
 
-    return false;
+    *outActual = 0xFF;
+
+    // - If RAM is disabled, writes are ignored.
+    if (!cartridge->ramEnabled)
+    {
+        return true;
+    }
+
+    // - If there is no RAM, writes are ignored.
+    if (cartridge->ramData == nullptr)
+    {
+        return true;
+    }
+
+    // - MBC5 supports RAM banks 0x00-0x0F (4 bits).
+    //   For rumble cartridges, bit 3 of ramBankNumber controls the rumble motor,
+    //   so only bits 0-2 are used for RAM banking (0x00-0x07).
+    size_t maxRamBank = (cartridge->ramSize / GB_EXTRAM_SIZE) - 1;
+    size_t bankNumber = cartridge->ramBankNumber & 0x0F;  // 4-bit bank number
+    
+    // - For rumble cartridges, mask to 3 bits instead of 4
+    if (cartridge->hasRumble)
+    {
+        bankNumber &= 0x07;
+    }
+    
+    bankNumber &= maxRamBank;
+    size_t bankOffset = bankNumber * GB_EXTRAM_SIZE;
+    cartridge->ramData[bankOffset + address] = value;
+    *outActual = value;
+
+    return true;
 }
 
 /* Private Function Definitions - Validation **********************************/

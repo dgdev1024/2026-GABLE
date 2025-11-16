@@ -81,6 +81,18 @@ project "gb"
     files { "./projects/GB/**.h", "./projects/GB/**.c" }
     includedirs { "./projects" }
 
+-- Project: `gbt` - Game Boy Emulator Core Library Test Suite ------------------
+
+project "gbt"
+    kind "ConsoleApp"
+    language "C"
+    location "./build"
+    targetdir "./build/bin/%{cfg.system}-%{cfg.buildcfg}"
+    objdir "./build/obj/%{cfg.system}-%{cfg.buildcfg}/%{prj.name}"
+    files { "./projects/GBT/**.h", "./projects/GBT/**.c" }
+    includedirs { "./projects" }
+    links { "gb" }
+
 -- Project: `gbmu` - Game Boy Emulator Frontend --------------------------------
 
 project "gbmu"

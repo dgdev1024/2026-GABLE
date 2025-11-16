@@ -39,6 +39,16 @@ typedef struct gbContext gbContext;
 typedef struct gbCartridge gbCartridge;
 
 /**
+ * @brief   Defines an opaque structure representing the Game Boy Emulator Core's
+ *          internal, general-purpose random-access memory (RAM) component.
+ * 
+ * This structure encapsulates the Game Boy system's work RAM (WRAM) and
+ * zero-page "high" RAM (HRAM) areas, providing methods for reading from and
+ * writing to these memory regions.
+ */
+typedef struct gbMemory gbMemory;
+
+/**
  * @brief   Defines a pointer to a function called by the Game Boy Emulator Core
  *          context when a read operation is attempted on its emulated, 16-bit
  *          address bus.
@@ -99,9 +109,9 @@ typedef void (*gbBusWriteCallback) (gbContext* context, uint16_t address,
 #define GB_UNUSED_START     0xFEA0
 #define GB_UNUSED_END       0xFEFF
 #define GB_UNUSED_SIZE      0x0060
-#define GB_HRAM_START       0xFF00
+#define GB_HRAM_START       0xFF80
 #define GB_HRAM_END         0xFFFE
-#define GB_HRAM_SIZE        0x00FF
+#define GB_HRAM_SIZE        0x007F
 
 /**
  * @brief   Enumerates specific addresses in the Game Boy's 16-bit address
@@ -201,10 +211,13 @@ typedef union gbCheckRules
 /**
  * @brief   Allocates and creates a new Game Boy Emulator Core context.
  * 
+ * @param   engineMode  Create the engine to run in a special mode, which is yet
+ *                      to be defined. Unused for now.
+ * 
  * @return  If successful, a pointer to the newly created @a `gbContext` structure.
  *          If allocation fails, returns `nullptr`.
  */
-GB_API gbContext* gbCreateContext ();
+GB_API gbContext* gbCreateContext (bool engineMode);
 
 /**
  * @brief   Destroys and deallocates a Game Boy Emulator Core context.
@@ -257,6 +270,46 @@ GB_API bool gbInitializeContext (gbContext* context);
  */
 GB_API bool gbAttachCartridge (gbContext* context,
     gbCartridge* cartridge);
+
+/* Public Function Declarations - Context Operation Mode **********************/
+
+/**
+ * @brief   Checks whether the given Game Boy context is in Color Game Boy (CGB)
+ *          mode, based on its attached cartridge and internal state.
+ * 
+ * @param   context         A pointer to the @a `gbContext` structure to be checked.
+ *                          Pass `nullptr` to use the current context.
+ * @param   outIsCGBMode    A pointer to a boolean variable where the result
+ *                          indicating whether the context is in CGB mode will be
+ *                          stored. Must not be `nullptr`.
+ * 
+ * @return  If checked successfully, returns `true`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `false`.
+ */
+GB_API bool gbCheckCGBMode (const gbContext* context, bool* outIsCGBMode);
+
+/**
+ * @brief   Checks whether the given Game Boy context is operating in "engine
+ *          mode".
+ * 
+ * "Engine mode" is a planned, yet-unimplemented, special mode of operation for
+ * the Game Boy Emulator Core. When enabled, it may alter the behavior of certain
+ * components or features of the emulator. The specifics of this mode are yet to
+ * be defined, but the intent is to provide a way use the emulator core as the
+ * backing for a more complex game engine for native game development.
+ * 
+ * @param   context         A pointer to the @a `gbContext` structure to be checked.
+ *                          Pass `nullptr` to use the current context.
+ * @param   outIsEngineMode A pointer to a boolean variable where the result
+ *                          indicating whether the context is in engine mode will be
+ *                          stored. Must not be `nullptr`.
+ * 
+ * @return  If checked successfully, returns `true`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `false`.
+ */
+GB_API bool gbCheckEngineMode (const gbContext* context, bool* outIsEngineMode);
 
 /* Public Function Declarations - Current Context *****************************/
 

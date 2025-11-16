@@ -56,7 +56,7 @@ namespace gbmu
     Application::Application (int argc, char** argv)
     {
         // - Create the Game Boy Emulator Core context.
-        m_gb = gbCreateContext();
+        m_gb = gbCreateContext(false);
         if (m_gb == nullptr)
         {
             throw std::runtime_error { "Error creating GB context!" };
