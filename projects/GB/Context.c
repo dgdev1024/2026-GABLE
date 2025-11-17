@@ -10,7 +10,25 @@
 
 #include <GB/Cartridge.h>
 #include <GB/Memory.h>
+#include <GB/Processor.h>
 #include <GB/Context.h>
+
+/* Private Constants and Enumerations *****************************************/
+
+/** 
+ * @brief   Defines the default access rules enforced during CPU external
+ *          memory accesses.
+ */
+static const gbCheckRules GB_DEFAULT_CHECK_RULES = {
+    .external       = 1,
+    .internal       = 0,
+    .speedSwitch    = 0,
+    .oamDMA         = 1,
+    .hblankDMA      = 1,
+    .component1     = 0,
+    .component2     = 0,
+    .component3     = 0
+};
 
 /* Private Unions and Structures **********************************************/
 
@@ -26,6 +44,7 @@ struct gbContext
     // Components
     gbCartridge*        cartridge;
     gbMemory*           memory;
+    gbProcessor*        processor;
 
     // Internal State
     bool                engineMode;
@@ -48,7 +67,8 @@ gbContext* gbCreateContext (bool engineMode)
     gbCheckpv(context, nullptr, "Error allocating memory for 'gbContext'");
 
     if (
-        (context->memory = gbCreateMemory(context)) == nullptr
+        (context->memory = gbCreateMemory(context)) == nullptr ||
+        (context->processor = gbCreateProcessor(context)) == nullptr
     )
     {
         gbDestroyContext(context);
@@ -67,6 +87,9 @@ bool gbDestroyContext (gbContext* context)
     // - Un-set userdata pointer to avoid dangling references.
     context->userdata = nullptr;
 
+    gbDestroyMemory(context->memory);
+    gbDestroyProcessor(context->processor);
+
     gbDestroy(context);
     return true;
 }
@@ -78,6 +101,7 @@ bool gbInitializeContext (gbContext* context)
         "No valid 'gbContext' provided, and no current context is set.");
 
     return
+        gbInitializeProcessor(context->processor) &&
         gbInitializeMemory(context->memory);
 }
 
@@ -137,7 +161,7 @@ bool gbCheckEngineMode (const gbContext* context, bool* outIsEngineMode)
     return true;
 }
 
-/* Public Functions - Current Context *****************************************/
+/* Public Functions - Current Context and Components **************************/
 
 bool gbMakeContextCurrent (gbContext* context)
 {
@@ -148,6 +172,24 @@ bool gbMakeContextCurrent (gbContext* context)
 gbContext* gbGetCurrentContext ()
 {
     return s_currentContext;
+}
+
+gbMemory* gbGetMemory (const gbContext* context)
+{
+    gbFallback(context, gbGetCurrentContext());
+    gbCheckv(context != nullptr, nullptr,
+        "No valid 'gbContext' provided, and no current context is set.");
+
+    return context->memory;
+}
+
+gbProcessor* gbGetProcessor (const gbContext* context)
+{
+    gbFallback(context, gbGetCurrentContext());
+    gbCheckv(context != nullptr, nullptr,
+        "No valid 'gbContext' provided, and no current context is set.");
+
+    return context->processor;
 }
 
 /* Public Functions - Userdata ************************************************/
@@ -204,6 +246,10 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
     gbCheckv(outValue != nullptr, false,
         "No valid output pointer provided for read value.");
 
+    // - Use default check rules if none are provided.
+    const gbCheckRules* checkRules = (rules != nullptr) ?
+        rules : &GB_DEFAULT_CHECK_RULES;
+
     // - Store the read value and result here.
     uint8_t value = 0xFF;
     bool result = false;
@@ -254,7 +300,7 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
         else
         {
             result = gbReadWorkRAM(context->memory, 
-                address - GB_ECHO_START, &value, rules);
+                address - GB_ECHO_START, &value, checkRules);
         }
     }
 
@@ -303,7 +349,7 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
     else if (address >= GB_HRAM_START && address <= GB_HRAM_END)
     {
         result = gbReadHighRAM(context->memory, 
-            address - GB_HRAM_START, &value, rules);
+            address - GB_HRAM_START, &value, checkRules);
     }
 
     // - Port I/O Registers
@@ -316,7 +362,7 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
         case GB_PR_TIMA:    break;
         case GB_PR_TMA:     break;
         case GB_PR_TAC:     break;
-        case GB_PR_IF:      break;
+        case GB_PR_IF:      result = gbReadIF(context->processor, &value, checkRules); break;
         case GB_PR_NR10:    break;
         case GB_PR_NR11:    break;
         case GB_PR_NR12:    break;
@@ -350,8 +396,8 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
         case GB_PR_OBP1:    break;
         case GB_PR_WY:      break;
         case GB_PR_WX:      break;
-        case GB_PR_KEY0:    break;
-        case GB_PR_KEY1:    break;
+        case GB_PR_KEY0:    result = gbReadKEY0(context->processor, &value, checkRules); break;
+        case GB_PR_KEY1:    result = gbReadKEY1(context->processor, &value, checkRules); break;
         case GB_PR_VBK:     break;
         case GB_PR_BANK:    break;
         case GB_PR_HDMA1:   break;
@@ -365,10 +411,10 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
         case GB_PR_OCPS:    break;
         case GB_PR_OCPD:    break;
         case GB_PR_OPRI:    break;
-        case GB_PR_SVBK:    result = gbReadSVBK(context->memory, &value, rules); break;
+        case GB_PR_SVBK:    result = gbReadSVBK(context->memory, &value, checkRules); break;
         case GB_PR_PCM12:   break;
         case GB_PR_PCM34:   break;
-        case GB_PR_IE:      break;
+        case GB_PR_IE:      result = gbReadIE(context->processor, &value, checkRules); break;
         default:            break;
     }
 
@@ -388,6 +434,10 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
     gbFallback(context, gbGetCurrentContext());
     gbCheckv(context != nullptr, false,
         "No valid 'gbContext' provided, and no current context is set.");
+
+    // - Use default check rules if none are provided.
+    const gbCheckRules* checkRules = (rules != nullptr) ?
+        rules : &GB_DEFAULT_CHECK_RULES;
 
     // - Store the actual written value and result here.
     uint8_t actual = 0xFF;
@@ -425,7 +475,7 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
     else if (address >= GB_WRAM0_START && address <= GB_WRAMX_END)
     {
         result = gbWriteWorkRAM(context->memory, 
-            address - GB_WRAM0_START, value, &actual, rules);
+            address - GB_WRAM0_START, value, &actual, checkRules);
     }
 
     // - `$E000` - `$FDFF`: Echo RAM (mirror of `$C000` - `$DDFF`)
@@ -440,7 +490,7 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         else
         {
             result = gbWriteWorkRAM(context->memory, 
-                address - GB_ECHO_START, value, &actual, rules);
+                address - GB_ECHO_START, value, &actual, checkRules);
         }
     }
 
@@ -470,7 +520,7 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
     else if (address >= GB_HRAM_START && address <= GB_HRAM_END)
     {
         result = gbWriteHighRAM(context->memory, 
-            address - GB_HRAM_START, value, &actual, rules);
+            address - GB_HRAM_START, value, &actual, checkRules);
     }
 
     // - Port I/O Registers
@@ -483,7 +533,7 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         case GB_PR_TIMA:    break;
         case GB_PR_TMA:     break;
         case GB_PR_TAC:     break;
-        case GB_PR_IF:      break;
+        case GB_PR_IF:      result = gbWriteIF(context->processor, value, &actual, checkRules); break;
         case GB_PR_NR10:    break;
         case GB_PR_NR11:    break;
         case GB_PR_NR12:    break;
@@ -517,8 +567,8 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         case GB_PR_OBP1:    break;
         case GB_PR_WY:      break;
         case GB_PR_WX:      break;
-        case GB_PR_KEY0:    break;
-        case GB_PR_KEY1:    break;
+        case GB_PR_KEY0:    result = gbWriteKEY0(context->processor, value, &actual, checkRules); break;
+        case GB_PR_KEY1:    result = gbWriteKEY1(context->processor, value, &actual, checkRules); break;
         case GB_PR_VBK:     break;
         case GB_PR_BANK:    break;
         case GB_PR_HDMA1:   break;
@@ -532,10 +582,10 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         case GB_PR_OCPS:    break;
         case GB_PR_OCPD:    break;
         case GB_PR_OPRI:    break;
-        case GB_PR_SVBK:    result = gbReadSVBK(context->memory, &actual, rules); break;
+        case GB_PR_SVBK:    result = gbWriteSVBK(context->memory, value, &actual, checkRules); break;
         case GB_PR_PCM12:   break;
         case GB_PR_PCM34:   break;
-        case GB_PR_IE:      break;
+        case GB_PR_IE:      result = gbWriteIE(context->processor, value, &actual, checkRules); break;
         default:            break;
     }
 

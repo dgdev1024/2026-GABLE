@@ -61,6 +61,7 @@ bool gbDestroyMemory (gbMemory* memory)
 
 bool gbInitializeMemory (gbMemory* memory)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckqv(memory, false);
 
     // Initialize Memory Buffers
@@ -78,6 +79,7 @@ bool gbInitializeMemory (gbMemory* memory)
 bool gbReadWorkRAM (const gbMemory* memory, uint16_t relativeAddress,
     uint8_t* outValue, const gbCheckRules* rules)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckv(memory != nullptr, false, "Memory pointer is null");
     gbCheckv(memory->parent != nullptr, false,
         "Parent context pointer is null");
@@ -112,6 +114,7 @@ bool gbReadWorkRAM (const gbMemory* memory, uint16_t relativeAddress,
 bool gbReadHighRAM (const gbMemory* memory, uint16_t relativeAddress,
     uint8_t* outValue, const gbCheckRules* rules)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckv(memory != nullptr, false, "Memory pointer is null");
     gbCheckv(memory->parent != nullptr, false,
         "Parent context pointer is null");
@@ -126,6 +129,7 @@ bool gbReadHighRAM (const gbMemory* memory, uint16_t relativeAddress,
 bool gbWriteWorkRAM (gbMemory* memory, uint16_t relativeAddress,
     uint8_t value, uint8_t* outActual, const gbCheckRules* rules)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckv(memory != nullptr, false, "Memory pointer is null");
     gbCheckv(memory->parent != nullptr, false,
         "Parent context pointer is null");
@@ -161,6 +165,7 @@ bool gbWriteWorkRAM (gbMemory* memory, uint16_t relativeAddress,
 bool gbWriteHighRAM (gbMemory* memory, uint16_t relativeAddress,
     uint8_t value, uint8_t* outActual, const gbCheckRules* rules)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckv(memory != nullptr, false, "Memory pointer is null");
     gbCheckv(memory->parent != nullptr, false,
         "Parent context pointer is null");
@@ -178,6 +183,7 @@ bool gbWriteHighRAM (gbMemory* memory, uint16_t relativeAddress,
 bool gbReadSVBK (const gbMemory* memory, uint8_t* outValue,
     const gbCheckRules* rules)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckv(memory != nullptr, false, "Memory pointer is null");
     gbCheckv(memory->parent != nullptr, false,
         "Parent context pointer is null");
@@ -217,6 +223,7 @@ bool gbReadSVBK (const gbMemory* memory, uint8_t* outValue,
 bool gbWriteSVBK (gbMemory* memory, uint8_t value, uint8_t* outActual, 
     const gbCheckRules* rules)
 {
+    gbFallback(memory, gbGetMemory(nullptr));
     gbCheckv(memory != nullptr, false, "Memory pointer is null");
     gbCheckv(memory->parent != nullptr, false,
         "Parent context pointer is null");

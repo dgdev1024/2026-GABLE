@@ -49,6 +49,16 @@ typedef struct gbCartridge gbCartridge;
 typedef struct gbMemory gbMemory;
 
 /**
+ * @brief   Defines an opaque structure representing the Game Boy Emulator Core's
+ *          CPU processor component.
+ * 
+ * This structure encapsulates the CPU's registers, flags, and execution state,
+ * providing methods for fetching, decoding, and executing instructions, as well
+ * as handling interrupts and other CPU-related operations.
+ */
+typedef struct gbProcessor gbProcessor;
+
+/**
  * @brief   Defines a pointer to a function called by the Game Boy Emulator Core
  *          context when a read operation is attempted on its emulated, 16-bit
  *          address bus.
@@ -118,7 +128,7 @@ typedef void (*gbBusWriteCallback) (gbContext* context, uint16_t address,
  *          space which are mapped to port registers provided by the Game Boy's
  *          hardware components.
  */
-typedef enum gbPortRegister
+typedef enum gbPortRegister : uint16_t
 {
     GB_PR_P1    = 0xFF00,   /** @brief `P1`, `JOYP` - Joypad Input (Mixed) */
     GB_PR_SB    = 0xFF01,   /** @brief `SB` - Serial Transfer Data (R/W) */
@@ -195,7 +205,7 @@ typedef union gbCheckRules
     {
         uint8_t external    : 1;    /** @brief Enforce rules for external access (eg. from the CPU). */
         uint8_t internal    : 1;    /** @brief Enforce rules for internal access (eg. from within the managing component). */
-        uint8_t speedSwitch : 1;    /** @brief CGB only - Enforce rules for access during a CPU speed switch. */
+        uint8_t speedSwitch : 1;    /** @brief CGB only - Enforce rules for internal access during a CPU speed switch. */
         uint8_t oamDMA      : 1;    /** @brief Enforce rules for access during an OAM DMA transfer. */
         uint8_t hblankDMA   : 1;    /** @brief CGB only - Enforce rules for access during an H-Blank DMA transfer. */
         uint8_t component1  : 1;    /** @brief Enforce component-specific rule 1. */
@@ -311,7 +321,7 @@ GB_API bool gbCheckCGBMode (const gbContext* context, bool* outIsCGBMode);
  */
 GB_API bool gbCheckEngineMode (const gbContext* context, bool* outIsEngineMode);
 
-/* Public Function Declarations - Current Context *****************************/
+/* Public Function Declarations - Current Context and Components **************/
 
 /**
  * @brief   Designates the provided Game Boy Emulator Core context as the current
@@ -340,6 +350,34 @@ GB_API bool gbMakeContextCurrent (gbContext* context);
  *          If no current context is set, returns `nullptr`.
  */
 GB_API gbContext* gbGetCurrentContext ();
+
+/**
+ * @brief   Retrieves the memory component associated with the given Game Boy
+ *          Emulator Core context.
+ * 
+ * @param   context     A pointer to the @a `gbContext` structure from which to
+ *                      retrieve the memory component. Pass `nullptr` to use
+ *                      the current context.
+ *
+ * @return  If successful, returns a pointer to the associated @a `gbMemory`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `nullptr`.
+ */
+GB_API gbMemory* gbGetMemory (const gbContext* context);
+
+/**
+ * @brief   Retrieves the processor component associated with the given Game Boy
+ *          Emulator Core context.
+ * 
+ * @param   context     A pointer to the @a `gbContext` structure from which to
+ *                      retrieve the processor component. Pass `nullptr` to use
+ *                      the current context.
+ *
+ * @return  If successful, returns a pointer to the associated @a `gbProcessor`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `nullptr`.
+ */
+GB_API gbProcessor* gbGetProcessor (const gbContext* context);
 
 /* Public Function Declarations - Userdata ************************************/
 
@@ -425,7 +463,8 @@ GB_API bool gbSetBusWriteCallback (gbContext* context,
  *                      the bus will be stored. Must not be `nullptr`.
  * @param   rules       A pointer to a @a `gbCheckRules` union specifying the
  *                      access rules to enforce during this read operation.
- *                      Pass `nullptr` or a zeroed-out union to bypass all checks.
+ *                      Pass `nullptr` to specify default CPU external access
+ *                      rules, or a zeroed-out union to bypass all checks.
  * 
  * @return  If successful, returns `true` and stores the read byte in
  *          @a `outValue`.
@@ -449,7 +488,8 @@ GB_API bool gbReadByte (const gbContext* context, uint16_t address,
  * @param   value       The byte value to write to the bus.
  * @param   rules       A pointer to a @a `gbCheckRules` union specifying the
  *                      access rules to enforce during this write operation.
- *                      Pass `nullptr` or a zeroed-out union to bypass all checks.
+ *                      Pass `nullptr` to specify default CPU external access
+ *                      rules, or a zeroed-out union to bypass all checks.
  * @param   outActual   A pointer to a byte variable where the actual value
  *                      written to the bus will be stored, which may differ from
  *                      the requested value due to hardware quirks or restrictions.
