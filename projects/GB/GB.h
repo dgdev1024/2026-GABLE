@@ -16,6 +16,9 @@ extern "C" {
 
 #include <GB/Context.h>
 #include <GB/Cartridge.h>
+#include <GB/Memory.h>
+#include <GB/Processor.h>
+#include <GB/Instructions.h>
 
 #if defined(__cplusplus)
 } // extern "C"

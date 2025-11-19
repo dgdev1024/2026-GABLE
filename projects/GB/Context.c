@@ -235,6 +235,22 @@ bool gbSetBusWriteCallback (gbContext* context, gbBusWriteCallback callback)
     return true;
 }
 
+/* Public Functions - Ticking *************************************************/
+
+bool gbTick (gbContext* context)
+{
+    gbFallback(context, gbGetCurrentContext());
+    gbCheckv(context != nullptr, false,
+        "No valid 'gbContext' provided, and no current context is set.");
+
+    if (context->cartridge == nullptr)
+    {
+        return true;
+    }
+
+    return gbTickProcessor(context->processor);
+}
+
 /* Public Functions - Address Bus *********************************************/
 
 bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue, 
@@ -425,7 +441,7 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
     }
 
     *outValue = value;
-    return result;
+    return true;
 }
 
 bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value, 
@@ -600,5 +616,5 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         *outActual = actual;
     }
 
-    return result;
+    return true;
 }

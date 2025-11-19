@@ -10,6 +10,7 @@
 /* Private Includes ***********************************************************/
 
 #include <GB/Processor.h>
+#include <GB/Instructions.h>
 
 /* Private Constants and Enumerations *****************************************/
 
@@ -73,6 +74,7 @@ struct gbProcessor
     gbInstructionFetchCallback      instructionFetchCallback;
     gbInstructionExecuteCallback    instructionExecuteCallback;
     gbInterruptServiceCallback      interruptServiceCallback;
+    gbRestartVectorCallback         restartVectorCallback;
 
     // Register File and Hardware Registers
     gbProcessorRegisterFile         registers;
@@ -96,6 +98,7 @@ struct gbProcessor
     bool                            haltBug;
     bool                            speedSwitching;
     bool                            isEngineMode;
+    bool                            isHybridMode;
     bool                            isCGBMode;
 
 };
@@ -108,8 +111,9 @@ static bool gbFetchIMM16 (gbProcessor* processor);
 
 /* Private Function Declarations - Instructions *******************************/
 
-static bool gbExecuteInstruction (gbProcessor* processor, uint8_t opcode);
-static bool gbExecuteInstructionCB (gbProcessor* processor, uint8_t opcode);
+static bool gbExecuteInstruction (gbProcessor* cpu, uint8_t opcode);
+static bool gbExecuteInstructionCB (gbProcessor* cpu, uint8_t opcode);
+static bool gbExecuteInstructionFD (gbProcessor* cpu, uint8_t opcode);
 
 /* Private Function Definitions - Data Fetching *******************************/
 
@@ -126,11 +130,11 @@ bool gbFetchOpcode (gbProcessor* processor)
     uint8_t opcode = 0x00;
     gbReadByte(processor->parent, processor->registers.programCounter,
         &opcode, nullptr);
-        if (gbConsumeMachineCycles(processor, 1) == false)
-        {
-            gbLogError("Error consuming machine cycles during opcode fetch.");
-            return false;
-        }
+    if (gbConsumeMachineCycles(processor, 1) == false)
+    {
+        gbLogError("Error consuming machine cycles during opcode fetch.");
+        return false;
+    }
         
     // - Advance the `PC` by one, unless the `HALT` bug is active.
     if (processor->haltBug == true)
@@ -138,8 +142,16 @@ bool gbFetchOpcode (gbProcessor* processor)
     else
         { processor->registers.programCounter++; }
 
-    // - Is this a prefix opcode (`0xCB`)?
-    if (opcode == 0xCB)
+    // - Is this a prefix opcode (`0xCB`, or another Engine-Mode-only prefix)?
+    if (
+        opcode == 0xCB ||
+        (
+            processor->isEngineMode == true &&
+            (
+                opcode == 0xFD
+            )
+        )
+    )
     {
         // - Fetch the next byte as the actual opcode.
         // - Consume one M-cycle for Memory Read.
@@ -237,30 +249,299 @@ bool gbFetchIMM16 (gbProcessor* processor)
 
 /* Private Function Definitions - Instructions ********************************/
 
-bool gbExecuteInstruction (gbProcessor* processor, uint8_t opcode)
+bool gbExecuteInstruction (gbProcessor* cpu, uint8_t opcode)
 {
-    gbAssert(processor);
+    gbAssert(cpu);
+
+    uint8_t* imm8 = &cpu->fetchedByte;
+    uint16_t* imm16 = &cpu->fetchedWord;
+
+    // Block 1 optimization: `0x40-0x7F` (8-bit `LD` operations)
+    // Pattern: `01DDDSSS` where `DDD` = destination (bits 3-5), `SSS` = source (bits 0-2)
+    if (opcode >= 0x40 && opcode <= 0x7F)
+    {
+        // Exception: 0x76 is `HALT`, not `LD [HL], [HL]`
+        if (opcode == 0x76)
+            return gbExecuteHALT(cpu);
+        
+        static const gbRegisterType regTable[8] = {
+            GB_RT_B, GB_RT_C, GB_RT_D, GB_RT_E, GB_RT_H, GB_RT_L, GB_RT_HL, GB_RT_A
+        };
+        
+        uint8_t destIndex = (opcode >> 3) & 0x07;  // Bits 3-5
+        uint8_t srcIndex = opcode & 0x07;          // Bits 0-2
+        gbRegisterType dest = regTable[destIndex];
+        gbRegisterType src = regTable[srcIndex];
+        
+        // Handle memory operations
+        if (destIndex == 6)  // Destination is `[HL]`
+            return gbExecuteLD_pR16_R8(cpu, GB_RT_HL, src, 0);
+        else if (srcIndex == 6)  // Source is `[HL]`
+            return gbExecuteLD_R8_pR16(cpu, dest, GB_RT_HL, 0);
+        else  // Both are registers
+            return gbExecuteLD_R8_R8(cpu, dest, src);
+    }
+
+    // Block 2 optimization: `0x80-0xBF` (8-bit arithmetic)
+    // Pattern: `10OOOSSS` where `OOO` = operation (bits 3-5), `SSS` = source (bits 0-2)
+    if (opcode >= 0x80 && opcode <= 0xBF)
+    {
+        static const gbRegisterType regTable[8] = {
+            GB_RT_B, GB_RT_C, GB_RT_D, GB_RT_E, GB_RT_H, GB_RT_L, GB_RT_HL, GB_RT_A
+        };
+        
+        uint8_t operation = (opcode >> 3) & 0x07;  // Bits 3-5
+        uint8_t srcIndex = opcode & 0x07;          // Bits 0-2
+        gbRegisterType src = regTable[srcIndex];
+        bool isMemory = (srcIndex == 6);  // `[HL]`
+        
+        switch (operation)
+        {
+            case 0: // `ADD`
+                return isMemory ? gbExecuteADD_A_pR16(cpu, GB_RT_HL, false) 
+                                : gbExecuteADD_A_R8(cpu, src, false);
+            case 1: // `ADC`
+                return isMemory ? gbExecuteADD_A_pR16(cpu, GB_RT_HL, true) 
+                                : gbExecuteADD_A_R8(cpu, src, true);
+            case 2: // `SUB`
+                return isMemory ? gbExecuteSUB_A_pR16(cpu, GB_RT_HL, false) 
+                                : gbExecuteSUB_A_R8(cpu, src, false);
+            case 3: // `SBC`
+                return isMemory ? gbExecuteSUB_A_pR16(cpu, GB_RT_HL, true) 
+                                : gbExecuteSUB_A_R8(cpu, src, true);
+            case 4: // `AND`
+                return isMemory ? gbExecuteAND_A_pR16(cpu, GB_RT_HL) 
+                                : gbExecuteAND_A_R8(cpu, src);
+            case 5: // `XOR`
+                return isMemory ? gbExecuteXOR_A_pR16(cpu, GB_RT_HL) 
+                                : gbExecuteXOR_A_R8(cpu, src);
+            case 6: // `OR`
+                return isMemory ? gbExecuteOR_A_pR16(cpu, GB_RT_HL) 
+                                : gbExecuteOR_A_R8(cpu, src);
+            case 7: // `CP`
+                return isMemory ? gbExecuteCP_A_pR16(cpu, GB_RT_HL) 
+                                : gbExecuteCP_A_R8(cpu, src);
+        }
+    }
 
     switch (opcode)
     {
+        // 0x00 - 0x0F
+        case 0x00: return gbExecuteNOP(cpu);
+        case 0x01: return gbFetchIMM16(cpu) && gbExecuteLD_R16_D16(cpu, GB_RT_BC, *imm16);
+        case 0x02: return gbExecuteLD_pR16_R8(cpu, GB_RT_BC, GB_RT_A, 0);
+        case 0x03: return gbExecuteINC_R16(cpu, GB_RT_BC);
+        case 0x04: return gbExecuteINC_R8(cpu, GB_RT_B);
+        case 0x05: return gbExecuteDEC_R8(cpu, GB_RT_B);
+        case 0x06: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_B, *imm8);
+        case 0x07: return gbExecuteRLCA(cpu);
+        case 0x08: return gbFetchIMM16(cpu) && gbExecuteLD_pA16_SP(cpu, *imm16);
+        case 0x09: return gbExecuteADD_HL_R16(cpu, GB_RT_BC);
+        case 0x0A: return gbExecuteLD_R8_pR16(cpu, GB_RT_A, GB_RT_BC, 0);
+        case 0x0B: return gbExecuteDEC_R16(cpu, GB_RT_BC);
+        case 0x0C: return gbExecuteINC_R8(cpu, GB_RT_C);
+        case 0x0D: return gbExecuteDEC_R8(cpu, GB_RT_C);
+        case 0x0E: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_C, *imm8);
+        case 0x0F: return gbExecuteRRCA(cpu);
+
+        // 0x10 - 0x1F
+        case 0x10: return gbFetchIMM8(cpu) && gbExecuteSTOP(cpu);
+        case 0x11: return gbFetchIMM16(cpu) && gbExecuteLD_R16_D16(cpu, GB_RT_DE, *imm16);
+        case 0x12: return gbExecuteLD_pR16_R8(cpu, GB_RT_DE, GB_RT_A, 0);
+        case 0x13: return gbExecuteINC_R16(cpu, GB_RT_DE);
+        case 0x14: return gbExecuteINC_R8(cpu, GB_RT_D);
+        case 0x15: return gbExecuteDEC_R8(cpu, GB_RT_D);
+        case 0x16: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_D, *imm8);
+        case 0x17: return gbExecuteRLA(cpu);
+        case 0x18: return gbFetchIMM8(cpu) && gbExecuteJR_S8(cpu, GB_CT_NONE, (int8_t) *imm8, nullptr);
+        case 0x19: return gbExecuteADD_HL_R16(cpu, GB_RT_DE);
+        case 0x1A: return gbExecuteLD_R8_pR16(cpu, GB_RT_A, GB_RT_DE, 0);
+        case 0x1B: return gbExecuteDEC_R16(cpu, GB_RT_DE);
+        case 0x1C: return gbExecuteINC_R8(cpu, GB_RT_E);
+        case 0x1D: return gbExecuteDEC_R8(cpu, GB_RT_E);
+        case 0x1E: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_E, *imm8);
+        case 0x1F: return gbExecuteRRA(cpu);
+
+        // 0x20 - 0x2F
+        case 0x20: return gbFetchIMM8(cpu) && gbExecuteJR_S8(cpu, GB_CT_NZ, (int8_t) *imm8, nullptr);
+        case 0x21: return gbFetchIMM16(cpu) && gbExecuteLD_R16_D16(cpu, GB_RT_HL, *imm16);
+        case 0x22: return gbExecuteLD_pR16_R8(cpu, GB_RT_HL, GB_RT_A, 1);
+        case 0x23: return gbExecuteINC_R16(cpu, GB_RT_HL);
+        case 0x24: return gbExecuteINC_R8(cpu, GB_RT_H);
+        case 0x25: return gbExecuteDEC_R8(cpu, GB_RT_H);
+        case 0x26: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_H, *imm8);
+        case 0x27: return gbExecuteDAA(cpu);
+        case 0x28: return gbFetchIMM8(cpu) && gbExecuteJR_S8(cpu, GB_CT_Z, (int8_t) *imm8, nullptr);
+        case 0x29: return gbExecuteADD_HL_R16(cpu, GB_RT_HL);
+        case 0x2A: return gbExecuteLD_R8_pR16(cpu, GB_RT_A, GB_RT_HL, 1);
+        case 0x2B: return gbExecuteDEC_R16(cpu, GB_RT_HL);
+        case 0x2C: return gbExecuteINC_R8(cpu, GB_RT_L);
+        case 0x2D: return gbExecuteDEC_R8(cpu, GB_RT_L);
+        case 0x2E: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_L, *imm8);
+        case 0x2F: return gbExecuteCPL(cpu);
+
+        // 0x30 - 0x3F
+        case 0x30: return gbFetchIMM8(cpu) && gbExecuteJR_S8(cpu, GB_CT_NC, (int8_t) *imm8, nullptr);
+        case 0x31: return gbFetchIMM16(cpu) && gbExecuteLD_R16_D16(cpu, GB_RT_SP, *imm16);
+        case 0x32: return gbExecuteLD_pR16_R8(cpu, GB_RT_HL, GB_RT_A, -1);
+        case 0x33: return gbExecuteINC_R16(cpu, GB_RT_SP);
+        case 0x34: return gbExecuteINC_pR16(cpu, GB_RT_HL);
+        case 0x35: return gbExecuteDEC_pR16(cpu, GB_RT_HL);
+        case 0x36: return gbFetchIMM8(cpu) && gbExecuteLD_pR16_D8(cpu, GB_RT_HL, *imm8);
+        case 0x37: return gbExecuteSCF(cpu);
+        case 0x38: return gbFetchIMM8(cpu) && gbExecuteJR_S8(cpu, GB_CT_C, (int8_t) *imm8, nullptr);
+        case 0x39: return gbExecuteADD_HL_R16(cpu, GB_RT_SP);
+        case 0x3A: return gbExecuteLD_R8_pR16(cpu, GB_RT_A, GB_RT_HL, -1);
+        case 0x3B: return gbExecuteDEC_R16(cpu, GB_RT_SP);
+        case 0x3C: return gbExecuteINC_R8(cpu, GB_RT_A);
+        case 0x3D: return gbExecuteDEC_R8(cpu, GB_RT_A);
+        case 0x3E: return gbFetchIMM8(cpu) && gbExecuteLD_R8_D8(cpu, GB_RT_A, *imm8);
+        case 0x3F: return gbExecuteCCF(cpu);
+
+        // 0xC0 - 0xCF
+        case 0xC0: return gbExecuteRET(cpu, GB_CT_NZ, nullptr);
+        case 0xC1: return gbExecutePOP_R16(cpu, GB_RT_BC);
+        case 0xC2: return gbFetchIMM16(cpu) && gbExecuteJP_A16(cpu, GB_CT_NZ, *imm16, nullptr);
+        case 0xC3: return gbFetchIMM16(cpu) && gbExecuteJP_A16(cpu, GB_CT_NONE, *imm16, nullptr);
+        case 0xC4: return gbFetchIMM16(cpu) && gbExecuteCALL_A16(cpu, GB_CT_NZ, *imm16, nullptr);
+        case 0xC5: return gbExecutePUSH_R16(cpu, GB_RT_BC);
+        case 0xC6: return gbFetchIMM8(cpu) && gbExecuteADD_A_D8(cpu, *imm8, false);
+        case 0xC7: return gbExecuteRST(cpu, GB_RV_00H, nullptr);
+        case 0xC8: return gbExecuteRET(cpu, GB_CT_Z, nullptr);
+        case 0xC9: return gbExecuteRET(cpu, GB_CT_NONE, nullptr);
+        case 0xCA: return gbFetchIMM16(cpu) && gbExecuteJP_A16(cpu, GB_CT_Z, *imm16, nullptr);
+        case 0xCC: return gbFetchIMM16(cpu) && gbExecuteCALL_A16(cpu, GB_CT_Z, *imm16, nullptr);
+        case 0xCD: return gbFetchIMM16(cpu) && gbExecuteCALL_A16(cpu, GB_CT_NONE, *imm16, nullptr);
+        case 0xCE: return gbFetchIMM8(cpu) && gbExecuteADD_A_D8(cpu, *imm8, true);
+        case 0xCF: return gbExecuteRST(cpu, GB_RV_08H, nullptr);
+
+        // 0xD0 - 0xDF
+        case 0xD0: return gbExecuteRET(cpu, GB_CT_NC, nullptr);
+        case 0xD1: return gbExecutePOP_R16(cpu, GB_RT_DE);
+        case 0xD2: return gbFetchIMM16(cpu) && gbExecuteJP_A16(cpu, GB_CT_NC, *imm16, nullptr);
+        case 0xD4: return gbFetchIMM16(cpu) && gbExecuteCALL_A16(cpu, GB_CT_NC, *imm16, nullptr);
+        case 0xD5: return gbExecutePUSH_R16(cpu, GB_RT_DE);
+        case 0xD6: return gbFetchIMM8(cpu) && gbExecuteSUB_A_D8(cpu, *imm8, false);
+        case 0xD7: return gbExecuteRST(cpu, GB_RV_10H, nullptr);
+        case 0xD8: return gbExecuteRET(cpu, GB_CT_C, nullptr);
+        case 0xD9: return gbExecuteRETI(cpu, nullptr);
+        case 0xDA: return gbFetchIMM16(cpu) && gbExecuteJP_A16(cpu, GB_CT_C, *imm16, nullptr);
+        case 0xDC: return gbFetchIMM16(cpu) && gbExecuteCALL_A16(cpu, GB_CT_C, *imm16, nullptr);
+        case 0xDE: return gbFetchIMM8(cpu) && gbExecuteSUB_A_D8(cpu, *imm8, true);
+        case 0xDF: return gbExecuteRST(cpu, GB_RV_18H, nullptr);
+
+        // 0xE0 - 0xFF
+        case 0xE0: return gbFetchIMM8(cpu) && gbExecuteLDH_pA8_R8(cpu, *imm8, GB_RT_A);
+        case 0xE1: return gbExecutePOP_R16(cpu, GB_RT_HL);
+        case 0xE2: return gbExecuteLDH_pC_R8(cpu, GB_RT_A);
+        case 0xE5: return gbExecutePUSH_R16(cpu, GB_RT_HL);
+        case 0xE6: return gbFetchIMM8(cpu) && gbExecuteAND_A_D8(cpu, *imm8);
+        case 0xE7: return gbExecuteRST(cpu, GB_RV_20H, nullptr);
+        case 0xE8: return gbFetchIMM8(cpu) && gbExecuteADD_SP_S8(cpu, (int8_t) *imm8);
+        case 0xE9: return gbExecuteJP_HL(cpu, nullptr, nullptr);
+        case 0xEA: return gbFetchIMM16(cpu) && gbExecuteLD_pA16_R8(cpu, *imm16, GB_RT_A);
+        case 0xEE: return gbFetchIMM8(cpu) && gbExecuteXOR_A_D8(cpu, *imm8);
+        case 0xEF: return gbExecuteRST(cpu, GB_RV_28H, nullptr);
+        
+        // 0xF0 - 0xFF
+        case 0xF0: return gbFetchIMM8(cpu) && gbExecuteLDH_R8_pA8(cpu, GB_RT_A, *imm8);
+        case 0xF1: return gbExecutePOP_R16(cpu, GB_RT_AF);
+        case 0xF2: return gbExecuteLDH_R8_pC(cpu, GB_RT_A);
+        case 0xF3: return gbExecuteDI(cpu);
+        case 0xF5: return gbExecutePUSH_R16(cpu, GB_RT_AF);
+        case 0xF6: return gbFetchIMM8(cpu) && gbExecuteOR_A_D8(cpu, *imm8);
+        case 0xF7: return gbExecuteRST(cpu, GB_RV_30H, nullptr);
+        case 0xF8: return gbFetchIMM8(cpu) && gbExecuteLD_R16_SPpS8(cpu, GB_RT_HL, (int8_t) *imm8);
+        case 0xF9: return gbExecuteLD_SP_R16(cpu, GB_RT_HL);
+        case 0xFA: return gbFetchIMM16(cpu) && gbExecuteLD_R8_pA16(cpu, GB_RT_A, *imm16);
+        case 0xFB: return gbExecuteEI(cpu);
+        case 0xFE: return gbFetchIMM8(cpu) && gbExecuteCP_A_D8(cpu, *imm8);
+        case 0xFF: return gbExecuteRST(cpu, GB_RV_38H, nullptr);
+
         default:
             gbLogError(
                 "Invalid or unimplemented opcode '0x%02X' at address '$%04X'.",
-                opcode, processor->fetchedOpcodeAddress);
+                opcode, cpu->fetchedOpcodeAddress);
             return false;
     }
 }
 
-bool gbExecuteInstructionCB (gbProcessor* processor, uint8_t opcode)
+bool gbExecuteInstructionCB (gbProcessor* cpu, uint8_t opcode)
 {
-    gbAssert(processor);
+    gbAssert(cpu);
+    
+    // Register lookup table: B, C, D, E, H, L, (HL), A
+    static const gbRegisterType regTable[8] = {
+        GB_RT_B, GB_RT_C, GB_RT_D, GB_RT_E, GB_RT_H, GB_RT_L, GB_RT_HL, GB_RT_A
+    };
+    
+    uint8_t regIndex = opcode & 0x07;  // Lower 3 bits determine register
+    gbRegisterType reg = regTable[regIndex];
+    bool isMemory = (regIndex == 6);  // (HL) is at index 6
+    
+    // Decode instruction type from upper 6 bits
+    if (opcode < 0x40)
+    {
+        // 0x00-0x3F: Rotate/Shift instructions
+        uint8_t operation = (opcode >> 3) & 0x07;  // Bits 3-5 determine operation
+        
+        switch (operation)
+        {
+            case 0: return isMemory ? gbExecuteRLC_pR16(cpu, reg) : gbExecuteRLC_R8(cpu, reg);
+            case 1: return isMemory ? gbExecuteRRC_pR16(cpu, reg) : gbExecuteRRC_R8(cpu, reg);
+            case 2: return isMemory ? gbExecuteRL_pR16(cpu, reg) : gbExecuteRL_R8(cpu, reg);
+            case 3: return isMemory ? gbExecuteRR_pR16(cpu, reg) : gbExecuteRR_R8(cpu, reg);
+            case 4: return isMemory ? gbExecuteSLA_pR16(cpu, reg) : gbExecuteSLA_R8(cpu, reg);
+            case 5: return isMemory ? gbExecuteSRA_pR16(cpu, reg) : gbExecuteSRA_R8(cpu, reg);
+            case 6: return isMemory ? gbExecuteSWAP_pR16(cpu, reg) : gbExecuteSWAP_R8(cpu, reg);
+            case 7: return isMemory ? gbExecuteSRL_pR16(cpu, reg) : gbExecuteSRL_R8(cpu, reg);
+        }
+    }
+    else
+    {
+        // 0x40-0xFF: BIT, RES, SET instructions
+        uint8_t bitIndex = (opcode >> 3) & 0x07;  // Bits 3-5 determine bit index
+        uint8_t operation = (opcode >> 6) & 0x03;  // Bits 6-7 determine operation type
+        
+        switch (operation)
+        {
+            case 1: // 0x40-0x7F: BIT
+                return isMemory ? gbExecuteBIT_U3_pR16(cpu, bitIndex, reg) 
+                                : gbExecuteBIT_U3_R8(cpu, bitIndex, reg);
+            case 2: // 0x80-0xBF: RES
+                return isMemory ? gbExecuteRES_U3_pR16(cpu, bitIndex, reg) 
+                                : gbExecuteRES_U3_R8(cpu, bitIndex, reg);
+            case 3: // 0xC0-0xFF: SET
+                return isMemory ? gbExecuteSET_U3_pR16(cpu, bitIndex, reg) 
+                                : gbExecuteSET_U3_R8(cpu, bitIndex, reg);
+        }
+    }
+    
+    // Should never reach here
+    gbLogError(
+        "Invalid or unimplemented opcode '0xCB%02X' at address '$%04X'.",
+        opcode, cpu->fetchedOpcodeAddress);
+    return false;
+}
+
+bool gbExecuteInstructionFD (gbProcessor* cpu, uint8_t opcode)
+{
+    gbAssert(cpu);
+    
+    // - Engine Mode Only
+    if (cpu->isEngineMode == false)
+    {
+        gbLogError("Opcode prefix '0xFD' is only available in Engine Mode.");
+        return false;
+    }
 
     switch (opcode)
     {
+        
         default:
             gbLogError(
-                "Unimplemented opcode '0xCB%02X' at address '$%04X'.",
-                opcode, processor->fetchedOpcodeAddress);
+                "Invalid or unimplemented opcode '0xFD%02X' at address '$%04X'.",
+                opcode, cpu->fetchedOpcodeAddress);
             return false;
     }
 }
@@ -273,7 +554,7 @@ gbProcessor* gbCreateProcessor (gbContext* parentContext)
         "Parent context pointer is null");
 
     gbProcessor* processor = gbCreateZero(1, gbProcessor);
-    gbCheckpv(processor != nullptr, nullptr,
+    gbCheckv(processor != nullptr, nullptr,
         "Error allocating memory for 'gbProcessor'");
 
     processor->parent = parentContext;
@@ -354,6 +635,60 @@ bool gbInitializeProcessor (gbProcessor* processor)
     return true;
 }
 
+/* Public Function Definitions - Helper Functions *****************************/
+
+gbContext* gbGetProcessorContext (gbProcessor* processor)
+{
+    gbFallback(processor, gbGetProcessor(nullptr));
+    gbCheckv(processor != nullptr, nullptr,
+        "No valid 'gbProcessor' provided, and no current processor is set.");
+    gbCheckv(processor->parent != nullptr, nullptr,
+        "The 'gbProcessor' has no valid parent 'gbContext'.");
+
+    return processor->parent;
+}
+
+const char* gbStringifyRegisterType (gbRegisterType regType)
+{
+    return GB_REGISTER_NAMES[regType];
+}
+
+bool gbSetHybridMode (gbProcessor* processor, bool hybridMode)
+{
+    gbFallback(processor, gbGetProcessor(nullptr));
+    gbCheckv(processor != nullptr, nullptr,
+        "No valid 'gbProcessor' provided, and no current processor is set.");
+    gbCheckv(processor->parent != nullptr, nullptr,
+        "The 'gbProcessor' has no valid parent 'gbContext'.");
+    
+    // - Engine Mode only.
+    if (processor->isEngineMode == false)
+    {
+        gbLogError("This function is only available in Engine Mode.");
+        return false;
+    }
+
+    // - If we are enabling Hybrid Mode, but it's already enabled, early out.
+    if (hybridMode == true && processor->isHybridMode == true)
+    {
+        return true;
+    }
+
+    // - Set the Hybrid Mode setting.
+    // - If enabling, perform the traditional fetch-execute-decode loop until
+    //   the Engine-Mode-only `EDF` instruction is encountered.
+    processor->isHybridMode = hybridMode;
+    while (processor->isHybridMode == true)
+    {
+        if (gbTickProcessor(processor) == false)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 /* Public Function Definitions - Callbacks ************************************/
 
 bool gbSetInstructionFetchCallback (gbProcessor* processor, gbInstructionFetchCallback callback)
@@ -389,6 +724,34 @@ bool gbSetInterruptServiceCallback (gbProcessor* processor, gbInterruptServiceCa
         "The 'gbProcessor' has no valid parent 'gbContext'.");
 
     processor->interruptServiceCallback = callback;
+    return true;
+}
+
+bool gbSetRestartVectorCallback (gbProcessor* processor, gbRestartVectorCallback callback)
+{
+    gbFallback(processor, gbGetProcessor(nullptr));
+    gbCheckv(processor != nullptr, false,
+        "No valid 'gbProcessor' provided, and no current processor is set.");
+    gbCheckv(processor->parent != nullptr, false,
+        "The 'gbProcessor' has no valid parent 'gbContext'.");
+
+    processor->restartVectorCallback = callback;
+    return true;
+}
+
+bool gbInvokeRestartVectorCallback (gbProcessor* processor, uint16_t restartVector)
+{
+    gbFallback(processor, gbGetProcessor(nullptr));
+    gbCheckv(processor != nullptr, false,
+        "No valid 'gbProcessor' provided, and no current processor is set.");
+    gbCheckv(processor->parent != nullptr, false,
+        "The 'gbProcessor' has no valid parent 'gbContext'.");
+
+    if (processor->restartVectorCallback != nullptr)
+    {
+        processor->restartVectorCallback(processor->parent, restartVector);
+    }
+
     return true;
 }
 
@@ -449,7 +812,7 @@ bool gbTickProcessor (gbProcessor* processor)
     if (processor->instructionFetchCallback != nullptr)
     {
         allowExecution = processor->instructionFetchCallback(
-            processor,
+            processor->parent,
             processor->fetchedOpcodeAddress,
             processor->fetchedOpcode
         );
@@ -460,22 +823,26 @@ bool gbTickProcessor (gbProcessor* processor)
     {
         // - Execute the instruction.
         bool success = false;
-        if ((processor->fetchedOpcode & 0xFF00) == 0xCB00)
+        switch (processor->fetchedOpcode & 0xFF00)
         {
-            success = gbExecuteInstructionCB(processor,
-                processor->fetchedOpcode & 0xFF);
-        }
-        else
-        {
-            success = gbExecuteInstruction(processor,
-                processor->fetchedOpcode & 0xFF);
+            case 0x0000: 
+                success = gbExecuteInstruction(processor, processor->fetchedOpcode & 0xFF);
+                break;
+            case 0xCB00:
+                success = gbExecuteInstructionCB(processor, processor->fetchedOpcode & 0xFF);
+                break;
+            case 0xFD00:
+                success =
+                    (processor->isEngineMode == true) &&
+                    gbExecuteInstructionFD(processor, processor->fetchedOpcode & 0xFF);
+                break;
         }
 
         // - Invoke the instruction execute callback, if set.
         if (processor->instructionExecuteCallback != nullptr)
         {
             processor->instructionExecuteCallback(
-                processor,
+                processor->parent,
                 processor->fetchedOpcodeAddress,
                 processor->fetchedOpcode,
                 success
@@ -525,6 +892,23 @@ bool gbConsumeMachineCycles (gbProcessor* processor, size_t machineCycles)
     return gbConsumeTickCycles(
         processor,
         machineCycles * ((processor->key1.speedMode == true) ? 2 : 4)
+    );
+}
+
+bool gbConsumeFetchCycles (gbProcessor* processor, size_t fetchCycles)
+{
+    gbFallback(processor, gbGetProcessor(nullptr));
+    gbCheckv(processor != nullptr, false,
+        "No valid 'gbProcessor' provided, and no current processor is set.");
+    gbCheckv(processor->parent != nullptr, false,
+        "The 'gbProcessor' has no valid parent 'gbContext'.");
+
+    if (processor->isEngineMode == false || processor->isHybridMode == true)
+        { return true; }
+
+    return gbConsumeTickCycles(
+        processor,
+        fetchCycles * ((processor->key1.speedMode == true) ? 2 : 4)
     );
 }
 
@@ -953,7 +1337,7 @@ bool gbServiceInterrupt (gbProcessor* processor)
             }
             else if (processor->interruptServiceCallback != nullptr)
             {
-                processor->interruptServiceCallback(processor, 
+                processor->interruptServiceCallback(processor->parent, 
                     (gbInterrupt) interrupt);
             }
 

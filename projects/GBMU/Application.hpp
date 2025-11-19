@@ -34,6 +34,10 @@ namespace gbmu
             uint8_t value) -> void;
         auto onBusWrite (gbContext* context, uint16_t address,
             uint8_t value, uint8_t actual) -> void;
+        auto onInstructionFetch (gbContext* context,
+            uint16_t address, uint16_t opcode) -> bool;
+        auto onInstructionExecute (gbContext* context,
+            uint16_t address, uint16_t opcode, bool success) -> void;
         auto onFrame (const gbContext* context,
             const uint32_t* framebuffer, bool lcdEnabled) -> void;
 
@@ -48,9 +52,13 @@ namespace gbmu
 
         auto showMenuBar () -> void;
         auto showFileMenu () -> void;
-        auto showEditMenu () -> void;
+        auto showEmulationMenu () -> void;
         auto showViewMenu () -> void;
         auto showHelpMenu () -> void;
+
+    private: /* Private Methods - ImGui Console Window ************************/
+
+        auto showConsoleWindow () -> void;
 
     private: /* Private Methods - Dialogs *************************************/
 
@@ -69,8 +77,22 @@ namespace gbmu
         sf::RenderWindow     m_window;
         sf::Clock            m_clock;
         bool                 m_imguiInit { false };
+
+    private: /* Private Members - Emulation Options ***************************/
+
+        bool                 m_blarggMode { true };
+
+    private: /* Private Members - Show Windows ********************************/
+
         bool                 m_showDemoWindow { false };
+        bool                 m_showConsoleWindow { true };
 
-    };
+    private: /* Private Members - Console Output Window ***********************/
+    
+        std::stringstream                  m_consoleBuffer;
+        std::streambuf*                    m_oldCoutBuf { nullptr };
+        std::streambuf*                    m_oldCerrBuf { nullptr };
+        std::unique_ptr<std::streambuf>    m_coutTee;
+        std::unique_ptr<std::streambuf>    m_cerrTee;
 
-}
+    };}

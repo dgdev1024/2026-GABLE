@@ -450,6 +450,22 @@ GB_API bool gbSetBusReadCallback (gbContext* context,
 GB_API bool gbSetBusWriteCallback (gbContext* context,
     gbBusWriteCallback callback);
 
+/* Public Function Declarations - Ticking *************************************/
+
+/**
+ * @brief   Ticks the given Game Boy Emulator Core context, causing its processor
+ *          component, and thereby its other components, to tick and perform
+ *          their operations.
+ * 
+ * @param   context     A pointer to the @a `gbContext` structure to be ticked.
+ *                      Pass `nullptr` to use the current context.
+ * 
+ * @return  If successful, returns `true`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `false`.
+ */
+GB_API bool gbTick (gbContext* context);
+
 /* Public Function Declarations - Address Bus *********************************/
 
 /**

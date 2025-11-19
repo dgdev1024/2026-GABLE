@@ -66,3 +66,4 @@ Makefile
 
 # Testing files and directories
 roms/
+scratch/

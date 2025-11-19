@@ -23,7 +23,7 @@ namespace gbmu
         if (ImGui::BeginMainMenuBar())
         {
             showFileMenu();
-            showEditMenu();
+            showEmulationMenu();
             showViewMenu();
             showHelpMenu();
 
@@ -57,10 +57,11 @@ namespace gbmu
         }
     }
 
-    auto Application::showEditMenu () -> void
+    auto Application::showEmulationMenu () -> void
     {
-        if (ImGui::BeginMenu("Edit"))
+        if (ImGui::BeginMenu("Emulation"))
         {
+            ImGui::MenuItem("Blargg Mode", nullptr, &m_blarggMode);
             ImGui::EndMenu();
         }
     }
@@ -69,6 +70,8 @@ namespace gbmu
     {
         if (ImGui::BeginMenu("View"))
         {
+            ImGui::MenuItem("Console Window", nullptr, &m_showConsoleWindow);
+            ImGui::Separator();
             ImGui::MenuItem("ImGui Demo Window", nullptr, &m_showDemoWindow);
             ImGui::EndMenu();
         }

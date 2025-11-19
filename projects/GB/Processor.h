@@ -20,8 +20,8 @@
  *          CPU processor component when a new instruction is fetched from memory
  *          and is about to be executed.
  * 
- * @param   processor       A pointer to the @a `gbProcessor` which fetched the
- *                          instruction.
+ * @param   context         A pointer to the @a `gbContext` whose processor is
+ *                          fetching the instruction.
  * @param   address         The 16-bit, absolute address from which the instruction's
  *                          opcode (and any prefix bytes) were fetched.
  * @param   opcode          A 16-bit value, the lower byte of which contains the
@@ -36,7 +36,7 @@
  *          `NOP` instruction). This can be useful for debugging, logging, or
  *          modifying the behavior of certain instructions at runtime.
  */
-typedef bool (*gbInstructionFetchCallback) (gbProcessor* processor,
+typedef bool (*gbInstructionFetchCallback) (gbContext* context,
     uint16_t address, uint16_t opcode);
 
 /**
@@ -44,7 +44,7 @@ typedef bool (*gbInstructionFetchCallback) (gbProcessor* processor,
  *          CPU processor component immediately after an instruction has been
  *          executed.
  *
- * @param   processor       A pointer to the @a `gbProcessor` which executed the
+ * @param   context         A pointer to the @a `gbContext` whose processor executed the
  *                          instruction.
  * @param   address         The 16-bit, absolute address from which the instruction's
  *                          opcode (and any prefix bytes) were fetched.
@@ -56,19 +56,31 @@ typedef bool (*gbInstructionFetchCallback) (gbProcessor* processor,
  * @param   success         A boolean value indicating whether the instruction
  *                          executed successfully, without errors.
  */
-typedef void (*gbInstructionExecuteCallback) (gbProcessor* processor,
+typedef void (*gbInstructionExecuteCallback) (gbContext* context,
     uint16_t address, uint16_t opcode, bool success);
 
 /**
  * @brief   Defines a pointer to a function called by the Game Boy Emulator Core's
  *          CPU processor component when it services an interrupt.
  * 
- * @param   processor       A pointer to the @a `gbProcessor` which is servicing
+ * @param   context         A pointer to the @a `gbContext` whose processor is servicing
  *                          the interrupt.
  * @param   interrupt       The type of interrupt being serviced.
  */
-typedef void (*gbInterruptServiceCallback) (gbProcessor* processor,
+typedef void (*gbInterruptServiceCallback) (gbContext* context,
     uint8_t interrupt);
+
+/**
+ * @brief   Defines a pointer to a function called by the Game Boy Emulator Core's
+ *          CPU processor component in response to executing one of the `RST`
+ *          restart vector instructions.
+ * 
+ * @param   context         A pointer to the @a `gbContext` whose processor is invoking
+ *                          the restart vector. 
+ * @param   restartVector   The restart vector address being invoked.
+ */
+typedef void (*gbRestartVectorCallback) (gbContext* context,
+    uint16_t restartVector);
 
 /* Public Constants and Enumerations ******************************************/
 
@@ -110,6 +122,19 @@ typedef enum gbProcessorFlag : uint8_t
     GB_PF_H = 5,    /** @brief `H` - Half Carry Flag */
     GB_PF_C = 4     /** @brief `C` - Carry Flag */
 } gbProcessorFlag;
+
+/**
+ * @brief   Enumerates the conditions used for the Game Boy CPU instruction
+ *          set's branching instructions.
+ */
+typedef enum gbCondition : uint8_t
+{   
+    GB_CT_NONE = 0, /** @brief No condition - always branch */
+    GB_CT_Z = 1,    /** @brief `Z` - Branch if Zero flag is set */
+    GB_CT_NZ = 2,   /** @brief `NZ` - Branch if Zero flag is not set */
+    GB_CT_C = 3,    /** @brief `C` - Branch if Carry flag is set */
+    GB_CT_NC = 4,   /** @brief `NC` - Branch if Carry flag is not set */
+} gbCondition;
 
 /**
  * @brief   Enumerates the types of interrupts which can be requested of the
@@ -198,6 +223,22 @@ typedef enum gbInterrupt : uint8_t
     GB_INT_ENGINE2 = 6, /** @brief Engine Mode Specific Interrupt #2 */
     GB_INT_ENGINE3 = 7  /** @brief Engine Mode Specific Interrupt #3 */
 } gbInterrupt;
+
+/**
+ * @brief   Enumerates the restart vector addresses used by the Game Boy CPU's
+ *          `RST` (Restart) instructions.
+ */
+typedef enum gbRestartVector : uint16_t
+{
+    GB_RV_00H = 0x00,
+    GB_RV_08H = 0x08,
+    GB_RV_10H = 0x10,
+    GB_RV_18H = 0x18,
+    GB_RV_20H = 0x20,
+    GB_RV_28H = 0x28,
+    GB_RV_30H = 0x30,
+    GB_RV_38H = 0x38
+} gbRestartVector;
 
 /* Public Unions and Structures ***********************************************/
 
@@ -333,6 +374,52 @@ GB_API bool gbDestroyProcessor (gbProcessor* processor);
  */
 GB_API bool gbInitializeProcessor (gbProcessor* processor);
 
+/* Public Function Declarations - Helper Functions ****************************/
+
+/**
+ * @brief   Retrieves the parent context of the given CPU processor component.
+ * 
+ * This is needed by those instruction execution functions that require access
+ * to the address space or other components of the parent context.
+ * 
+ * @param   processor   A pointer to the @a `gbProcessor` structure whose parent
+ *                      context is to be retrieved. Must not be `nullptr`.
+ * 
+ * @return  If successful, returns a pointer to the parent @a `gbContext` structure.
+ *          If an invalid processor component is provided (i.e., `nullptr`), returns
+ *          `nullptr`.
+ */
+GB_API gbContext* gbGetProcessorContext (gbProcessor* processor);
+
+/**
+ * @brief   Retrieves a string representation of the given CPU register type.
+ * 
+ * @param   regType     The @a `gbRegisterType` enumeration value representing
+ *                      the CPU register type. Must be a valid value.
+ * 
+ * @return  If successful, returns a pointer to a null-terminated string
+ *          representing the name of the register type.
+ *          If an invalid register type is provided, returns `nullptr`.
+ */
+GB_API const char* gbStringifyRegisterType (gbRegisterType regType);
+
+/**
+ * @brief   Sets the current "Hybrid Mode" state of the given CPU processor.
+ * 
+ * This function is intended for internal use only, and does nothing if the CPU's
+ * parent context is not operating in Engine Mode.
+ * 
+ * @param   processor   A pointer to the @a `gbProcessor` structure for which to
+ *                      set the instruction fetch callback. Pass `nullptr` to use
+ *                      the current context's processor.
+ * 
+ * @return  If successful, returns `true`.
+ *          If no processor is provided (i.e., `nullptr`) and no current processor
+ *          exists, or if the processor's parent context is not operating in
+ *          Engine Mode, returns `false`.
+ */
+GB_API bool gbSetHybridMode (gbProcessor* processor, bool hybridMode);
+
 /* Public Function Declarations - Callbacks ***********************************/
 
 /**
@@ -385,6 +472,44 @@ GB_API bool gbSetInstructionExecuteCallback (gbProcessor* processor, gbInstructi
  *          exists, returns `false`.
  */
 GB_API bool gbSetInterruptServiceCallback (gbProcessor* processor, gbInterruptServiceCallback callback);
+
+/**
+ * @brief   Sets the callback function to be invoked when a restart vector is
+ *          used by the CPU processor component.
+ * 
+ * @param   processor   A pointer to the @a `gbProcessor` structure for which to
+ *                      set the restart vector callback. Pass `nullptr` to use
+ *                      the current context's processor.
+ * @param   callback    A pointer to the @a `gbRestartVectorCallback` function
+ *                      to set as the callback. Pass `nullptr` to unset any
+ *                      existing callback.
+ * 
+ * @return  If successful, returns `true`.
+ *          If no processor is provided (i.e., `nullptr`) and no current processor
+ *          exists, returns `false`.
+ */
+GB_API bool gbSetRestartVectorCallback (gbProcessor* processor, gbRestartVectorCallback callback);
+
+/**
+ * @brief   Invokes the restart vector callback function for the given CPU
+ *          processor component, if one is set.
+ * 
+ * This function is called in response to the execution of one of the CPU's `RST`
+ * (Restart) instructions, and calls the registered restart vector callback function.
+ * This function is intended for internal use only, and should not be called
+ * directly by external code.
+ * 
+ * @param   processor       A pointer to the @a `gbProcessor` structure for which
+ *                          to invoke the restart vector callback. Pass `nullptr`
+ *                          to use the current context's processor.
+ * @param   restartVector   The restart vector address being invoked.
+ * 
+ * @return  If successful, or if no restart vector callback is set, returns `true`.
+ *          If no processor is provided (i.e., `nullptr`) and no current processor
+ *          exists, returns `false`.
+ */
+GB_API bool gbInvokeRestartVectorCallback (gbProcessor* processor,
+    uint16_t restartVector);
 
 /* Public Function Declarations - Ticking and Timing **************************/
 
@@ -445,6 +570,27 @@ GB_API bool gbConsumeTickCycles (gbProcessor* processor, size_t tickCycles);
  *          returns `false`.
  */
 GB_API bool gbConsumeMachineCycles (gbProcessor* processor, size_t machineCycles);
+
+/**
+ * @brief   Helper function used by the instruction execution functions to
+ *          simulate M-cycles consumed from instruction data fetches in Engine
+ *          Mode. Does nothing if not in Engine Mode.
+ * 
+ * This function is exactly the same as the @a `gbConsumeMachineCycles` function, 
+ * except that this function does nothing if the CPU's parent context is not
+ * operating in Engine Mode, or if the CPU is currently in Hybrid Mode.
+ * 
+ * @param   processor       A pointer to the @a `gbProcessor` structure on which
+ *                          to consume fetch cycles.
+ * @param   fetchCycles     The number of M-cycles to consume for instruction
+ *                          data fetches.
+ * 
+ * @return  If ticking causes the other components to tick succesfully, without
+ *          errors, returns `true`.
+ *          If an error occurs or if no processor is provided (i.e., `nullptr`),
+ *          returns `false`.
+ */
+GB_API bool gbConsumeFetchCycles (gbProcessor* processor, size_t fetchCycles);
 
 /* Public Function Declarations - Processor Registers and Flags ***************/
 

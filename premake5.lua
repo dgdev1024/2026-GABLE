@@ -34,9 +34,9 @@ workspace "2026-GABLE"
     if _OPTIONS["unused-is-error"] == nil then
         filter { "toolset:gcc or clang" }
             buildoptions { "-Wno-unused-parameter", "-Wno-unused-function", 
-                "-Wno-unused-variable" }
+                "-Wno-unused-variable", "-Wno-unused-but-set-variable" }
         filter { "toolset:msc" }
-            buildoptions { "/wd4100", "/wd4505", "/wd4189" }
+            buildoptions { "/wd4100", "/wd4505", "/wd4189", "/wd4181" }
         filter {}
     end
 
