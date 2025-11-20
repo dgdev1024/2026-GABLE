@@ -59,6 +59,25 @@ typedef struct gbMemory gbMemory;
 typedef struct gbProcessor gbProcessor;
 
 /**
+ * @brief   Defines an opaque structure representing the Game Boy Emulator Core's
+ *          internal timer component.
+ * 
+ * This structure encapsulates the timer registers and state, providing methods
+ * for managing the Game Boy's internal timing mechanisms.
+ */
+typedef struct gbTimer gbTimer;
+
+/**
+ * @brief   Defines an opaque structure representing the Game Boy Emulator Core's
+ *          internal pixel processing unit (PPU) component (henceforth, the
+ *          "renderer").
+ * 
+ * This structure encapsulates the PPU's registers, state, and rendering
+ * mechanisms, providing methods for managing the Game Boy's graphics output.
+ */
+typedef struct gbRenderer gbRenderer;
+
+/**
  * @brief   Defines a pointer to a function called by the Game Boy Emulator Core
  *          context when a read operation is attempted on its emulated, 16-bit
  *          address bus.
@@ -378,6 +397,20 @@ GB_API gbMemory* gbGetMemory (const gbContext* context);
  *          exists, returns `nullptr`.
  */
 GB_API gbProcessor* gbGetProcessor (const gbContext* context);
+
+/**
+ * @brief   Retrieves the timer component associated with the given Game Boy
+ *          Emulator Core context.
+ * 
+ * @param   context     A pointer to the @a `gbContext` structure from which to
+ *                      retrieve the timer component. Pass `nullptr` to use the
+ *                      current context.
+ *
+ * @return  If successful, returns a pointer to the associated @a `gbTimer`.
+ *          If no context is provided (i.e., `nullptr`) and no current context
+ *          exists, returns `nullptr`.
+ */
+GB_API gbTimer* gbGetTimer (const gbContext* context);
 
 /* Public Function Declarations - Userdata ************************************/
 

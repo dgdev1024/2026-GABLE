@@ -11,6 +11,7 @@
 #include <GB/Cartridge.h>
 #include <GB/Memory.h>
 #include <GB/Processor.h>
+#include <GB/Timer.h>
 #include <GB/Context.h>
 
 /* Private Constants and Enumerations *****************************************/
@@ -45,6 +46,7 @@ struct gbContext
     gbCartridge*        cartridge;
     gbMemory*           memory;
     gbProcessor*        processor;
+    gbTimer*            timer;
 
     // Internal State
     bool                engineMode;
@@ -68,7 +70,8 @@ gbContext* gbCreateContext (bool engineMode)
 
     if (
         (context->memory = gbCreateMemory(context)) == nullptr ||
-        (context->processor = gbCreateProcessor(context)) == nullptr
+        (context->processor = gbCreateProcessor(context)) == nullptr ||
+        (context->timer = gbCreateTimer(context)) == nullptr
     )
     {
         gbDestroyContext(context);
@@ -89,6 +92,7 @@ bool gbDestroyContext (gbContext* context)
 
     gbDestroyMemory(context->memory);
     gbDestroyProcessor(context->processor);
+    gbDestroyTimer(context->timer);
 
     gbDestroy(context);
     return true;
@@ -102,7 +106,8 @@ bool gbInitializeContext (gbContext* context)
 
     return
         gbInitializeProcessor(context->processor) &&
-        gbInitializeMemory(context->memory);
+        gbInitializeMemory(context->memory) &&
+        gbInitializeTimer(context->timer);
 }
 
 /* Public Functions - Cartridge ***********************************************/
@@ -190,6 +195,15 @@ gbProcessor* gbGetProcessor (const gbContext* context)
         "No valid 'gbContext' provided, and no current context is set.");
 
     return context->processor;
+}
+
+gbTimer* gbGetTimer (const gbContext* context)
+{
+    gbFallback(context, gbGetCurrentContext());
+    gbCheckv(context != nullptr, nullptr,
+        "No valid 'gbContext' provided, and no current context is set.");
+
+    return context->timer;
 }
 
 /* Public Functions - Userdata ************************************************/
@@ -374,10 +388,10 @@ bool gbReadByte (const gbContext* context, uint16_t address, uint8_t* outValue,
         case GB_PR_P1:      break;
         case GB_PR_SB:      break;
         case GB_PR_SC:      break;
-        case GB_PR_DIV:     break;
-        case GB_PR_TIMA:    break;
-        case GB_PR_TMA:     break;
-        case GB_PR_TAC:     break;
+        case GB_PR_DIV:     result = gbReadDIV(context->timer, &value, checkRules); break;
+        case GB_PR_TIMA:    result = gbReadTIMA(context->timer, &value, checkRules); break;
+        case GB_PR_TMA:     result = gbReadTMA(context->timer, &value, checkRules); break;
+        case GB_PR_TAC:     result = gbReadTAC(context->timer, &value, checkRules); break;
         case GB_PR_IF:      result = gbReadIF(context->processor, &value, checkRules); break;
         case GB_PR_NR10:    break;
         case GB_PR_NR11:    break;
@@ -545,10 +559,10 @@ bool gbWriteByte (gbContext* context, uint16_t address, uint8_t value,
         case GB_PR_P1:      break;
         case GB_PR_SB:      break;
         case GB_PR_SC:      break;
-        case GB_PR_DIV:     break;
-        case GB_PR_TIMA:    break;
-        case GB_PR_TMA:     break;
-        case GB_PR_TAC:     break;
+        case GB_PR_DIV:     result = gbWriteDIV(context->timer, value, &actual, checkRules); break;
+        case GB_PR_TIMA:    result = gbWriteTIMA(context->timer, value, &actual, checkRules); break;
+        case GB_PR_TMA:     result = gbWriteTMA(context->timer, value, &actual, checkRules); break;
+        case GB_PR_TAC:     result = gbWriteTAC(context->timer, value, &actual, checkRules); break;
         case GB_PR_IF:      result = gbWriteIF(context->processor, value, &actual, checkRules); break;
         case GB_PR_NR10:    break;
         case GB_PR_NR11:    break;

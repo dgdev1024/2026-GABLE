@@ -11,6 +11,7 @@
 
 #include <GB/Processor.h>
 #include <GB/Instructions.h>
+#include <GB/Timer.h>
 
 /* Private Constants and Enumerations *****************************************/
 
@@ -774,15 +775,18 @@ bool gbTickProcessor (gbProcessor* processor)
     // - Check for `HALT` state.
     if (processor->halted == true)
     {
-        // - Exit `HALT` if any enabled interrupt is pending.
+        // - Check if any enabled interrupt is pending.
         bool anyInterruptPending = false;
         gbCheckAnyInterruptPending(processor, &anyInterruptPending);
+        
         if (anyInterruptPending == true)
         {
+            // - Exit HALT when any interrupt is pending, even if IME=0
             gbExitHaltState(processor);
         }
         else
         {
+            // - Stay in HALT, consume 1 M-cycle
             return gbConsumeMachineCycles(processor, 1);
         }
     }
@@ -873,8 +877,17 @@ bool gbConsumeTickCycles (gbProcessor* processor, size_t tickCycles)
     gbCheckv(processor->parent != nullptr, false,
         "The 'gbProcessor' has no valid parent 'gbContext'.");
 
+    gbTimer* timer = gbGetTimer(processor->parent);
+
     for (size_t i = 0; i < tickCycles; ++i)
     {
+        if (
+            gbTickTimer(timer) == false
+        )
+        {
+            return false;
+        }
+
         processor->tickCyclesConsumed++;
     }
 
@@ -1228,8 +1241,13 @@ bool gbCheckAnyInterruptPending (const gbProcessor* processor, bool* outPending)
         "The 'gbProcessor' has no valid parent 'gbContext'.");
     gbCheckv(outPending != nullptr, false,
         "The output value pointer is null.");
+        
+    // - In Engine Mode, consider all 8 bits of `IF`/`IE`.
+    // - In non-Engine Mode, only consider the lower 5 bits.
+    *outPending = (processor->isEngineMode == true) ?
+        (processor->iflags.raw & processor->ienable.raw) != 0 :
+        ((processor->iflags.raw & processor->ienable.raw) & 0x1F) != 0;
 
-    *outPending = ((processor->iflags.raw & processor->ienable.raw) != 0);
     return true;
 }
 
@@ -1251,6 +1269,7 @@ bool gbRequestInterrupt (gbProcessor* processor, gbInterrupt interrupt)
     );
 
     processor->iflags.raw |= (1 << interrupt);
+
     return true;
 }
 
@@ -1299,8 +1318,8 @@ bool gbServiceInterrupt (gbProcessor* processor)
     )
     {
         // - Check if this interrupt is both requested and enabled.
-        bool isRequested = ((processor->iflags.raw >> interrupt) & 0x01) == 1;
-        bool isEnabled   = ((processor->ienable.raw >> interrupt) & 0x01) == 1;
+        bool isRequested = ((processor->iflags.raw >> interrupt) & 0x01) != 0;
+        bool isEnabled   = ((processor->ienable.raw >> interrupt) & 0x01) != 0;
 
         if (isRequested == true && isEnabled == true)
         {
@@ -1309,6 +1328,7 @@ bool gbServiceInterrupt (gbProcessor* processor)
             processor->iflags.raw &= ~(1 << interrupt);
             processor->interruptMaster = false;
             processor->halted = false;
+            processor->haltBug = false;
 
             // - Service the interrupt:
             //   - Wait 2 M-cycles
@@ -1367,23 +1387,28 @@ bool gbEnterHaltState (gbProcessor* processor)
         return true;
     }
 
-    // - Check for the `HALT` bug condition.
-    //   This will be triggered if the `HALT` instruction is executed while
-    //   the `IME` is disabled and there is at least one pending interrupt.
-    //   If the `HALT` bug condition is met, then the processor will not
-    //   actually enter the `HALT` state, and the next opcode fetch will
-    //   read from the current `PC` address again.
-    bool anyInterruptPending = false;
-    gbCheckAnyInterruptPending(processor, &anyInterruptPending);
-    if (processor->interruptMaster == false && anyInterruptPending == true)
-    {
-        processor->haltBug = true;
-        processor->halted = false;
-    }
-    else
+    // - Entering `HALT` with `IME=1` is normal behavior.
+    if (processor->interruptMaster == true)
     {
         processor->halted = true;
         processor->haltBug = false;
+    }
+    else
+    {
+        // - Entering `HALT` with `IME=0`, when any enabled interrupt is pending,
+        //   triggers the `HALT` bug.
+        bool anyInterruptPending = false;
+        gbCheckAnyInterruptPending(processor, &anyInterruptPending);
+        if (anyInterruptPending == true)
+        {
+            processor->halted = false;
+            processor->haltBug = true;
+        }
+        else
+        {
+            processor->halted = true;
+            processor->haltBug = false;
+        }
     }
 
     return true;
@@ -1408,6 +1433,9 @@ bool gbEnterStopState (gbProcessor* processor)
         "No valid 'gbProcessor' provided, and no current processor is set.");
     gbCheckv(processor->parent != nullptr, false,
         "The 'gbProcessor' has no valid parent 'gbContext'.");
+
+    gbTimer* timer = gbGetTimer(processor->parent);
+    gbWriteDIV(timer, 0x00, nullptr, nullptr);
 
     if (
         processor->isCGBMode == true && 
@@ -1498,6 +1526,13 @@ bool gbCheckSpeedSwitchArmed (const gbProcessor* processor, bool* outArmed)
     gbCheckv(outArmed != nullptr, false,
         "The output value pointer is null.");
 
+    // - In non-CGB modes, speed switching is not supported.
+    if (processor->isCGBMode == false)
+    {
+        *outArmed = false;
+        return true;
+    }
+
     *outArmed = processor->key1.speedSwitchArmed;
     return true;
 }
@@ -1512,6 +1547,13 @@ bool gbCheckSpeedSwitchState (const gbProcessor* processor, bool* outSwitching)
     gbCheckv(outSwitching != nullptr, false,
         "The output value pointer is null.");
 
+    // - In non-CGB modes, the speed mode is always normal speed.
+    if (processor->isCGBMode == false)
+    {
+        *outSwitching = false;
+        return true;
+    }
+
     *outSwitching = processor->speedSwitching;
     return true;
 }
@@ -1525,6 +1567,13 @@ bool gbCheckCurrentSpeedMode (const gbProcessor* processor, bool* outDoubleSpeed
         "The 'gbProcessor' has no valid parent 'gbContext'.");
     gbCheckv(outDoubleSpeed != nullptr, false,
         "The output value pointer is null.");
+
+    // - In non-CGB modes, the speed mode is always normal speed.
+    if (processor->isCGBMode == false)
+    {
+        *outDoubleSpeed = false;
+        return true;
+    }
 
     *outDoubleSpeed = processor->key1.speedMode;
     return true;

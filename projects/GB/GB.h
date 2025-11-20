@@ -19,6 +19,7 @@ extern "C" {
 #include <GB/Memory.h>
 #include <GB/Processor.h>
 #include <GB/Instructions.h>
+#include <GB/Timer.h>
 
 #if defined(__cplusplus)
 } // extern "C"

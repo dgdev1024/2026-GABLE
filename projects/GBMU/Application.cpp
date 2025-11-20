@@ -196,9 +196,10 @@ namespace gbmu
         std::uint32_t ticks = 0;
         while (m_window.isOpen())
         {
-            if (m_cart != nullptr)
+            if (m_cart != nullptr && gbTick(m_gb) == false)
             {
-                gbTick(m_gb);
+                m_window.close();
+                return 1;
             }
 
             if ((++ticks % 70224) == 0)
