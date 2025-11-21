@@ -16,6 +16,14 @@
 #include <SFML/Window.hpp>
 #include <SFML/Network.hpp>
 #include <SFML/System.hpp>
+#include <GB/Executive.hpp>
+
+/* Public Constants ***********************************************************/
+
+namespace gbmu
+{
+    constexpr const char* APPLICATION_TITLE { "GBMU Game Boy Emulator" };
+}
 
 /* Public Classes *************************************************************/
 
@@ -30,6 +38,12 @@ namespace gbmu
 
         auto start () -> std::int32_t;
 
+    private: /* Private Methods ***********************************************/
+
+        auto parseArguments (int argc, char** argv) -> void;
+        auto loadCartridge (const std::filesystem::path& path) -> void;
+        auto unloadCartridge () -> void;
+
     private: /* Private Methods - Application Lifecycle ***********************/
 
         auto onEvent (const std::optional<sf::Event>& event) -> void;
@@ -41,6 +55,9 @@ namespace gbmu
     private: /* Private Methods - Context Callbacks ***************************/
 
         auto installCallbacks () -> void;
+        auto onBusRead (std::uint16_t address, std::uint8_t& value) -> void;
+        auto onBusWrite (std::uint16_t address, const std::uint8_t& value,
+            std::uint8_t& actualValue) -> void;
         auto onFrame () -> void;
 
     private: /* Private Methods - ImGui Main Menu Bar *************************/
@@ -52,13 +69,18 @@ namespace gbmu
 
     private: /* Private Methods - Dialogs *************************************/
 
+        auto showOpenCartridgeDialog () -> void;
         auto showAboutDialog () -> void;
 
     private: /* Private Members ***********************************************/
 
-        sf::RenderWindow    m_window;
-        sf::Clock           m_deltaClock;
-        bool                m_imguiInitialized { false };
+        std::unique_ptr<gb::SystemContext>  m_systemContext { nullptr };
+        std::shared_ptr<gb::ICartridge>     m_cartridge { nullptr };
+        std::filesystem::path               m_cartridgePath {};
+        gb::Result<void>                    m_lastTickResult {};
+        sf::RenderWindow                    m_window;
+        sf::Clock                           m_deltaClock;
+        bool                                m_imguiInitialized { false };
 
     private: /* Private Members - Show Windows ********************************/
 

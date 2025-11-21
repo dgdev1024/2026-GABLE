@@ -71,7 +71,7 @@ project "gb"
     else
         kind "SharedLib"
         pic "On"
-        defines { "GB_BUILD_SHARED" }
+        defines { "GB_BUILDING_SHARED" }
     end
 
     location "./build"

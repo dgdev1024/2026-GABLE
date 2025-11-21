@@ -32,10 +32,15 @@ namespace gbmu
     {
         if (ImGui::BeginMenu("File"))
         {
+            if (ImGui::MenuItem("Open Cartridge...", "Ctrl+O"))
+                { showOpenCartridgeDialog(); }
+            if (ImGui::MenuItem("Close Cartridge", "Ctrl+W", nullptr, m_cartridge != nullptr))
+                { unloadCartridge(); }
+
+            ImGui::Separator();
+
             if (ImGui::MenuItem("Exit", "Alt+F4"))
-            {
-                onClose();
-            }
+                { onClose(); }
 
             ImGui::EndMenu();
         }

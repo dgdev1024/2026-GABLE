@@ -16,6 +16,26 @@
 
 namespace gbmu
 {
+
+    auto Application::showOpenCartridgeDialog () -> void
+    {
+        auto result = pfd::open_file(
+            "Open Game Boy Cartridge",
+            (m_cartridgePath.empty() == true) ?
+                std::filesystem::current_path().string() :
+                m_cartridgePath.parent_path().string(),
+            { 
+                "Game Boy ROM Images (*.gb *.gbc)", "*.gb *.gbc", 
+                "All Files (*.*)", "*" 
+            }
+        ).result();
+
+        if (result.empty() == false)
+        {
+            loadCartridge(result.front());
+        }
+    }
+
     auto Application::showAboutDialog () -> void
     {
         pfd::message(
@@ -26,4 +46,5 @@ namespace gbmu
             pfd::choice::ok, pfd::icon::info
         );
     }
+
 }
