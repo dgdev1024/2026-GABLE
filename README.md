@@ -21,16 +21,17 @@ copyright or intellectual property laws.
 
 ## Projects
 
-Below is a brief overview of the main projects within the GABLE solution. The
-names of the projects correspond to their folders within the `projects/` folder:
+Below is a brief overview of the main projects within the GABLE solution. All 
+projects listed are C++23-compliant. The names of the projects correspond to 
+their folders within the `projects/` folder:
 
 - **`GB`** - Game Boy Emulation Core Library.
-    - This is a C23-compliant library which implements a cycle-accurate emulator
+    - This is a library which implements a cycle-accurate emulator
       core for the Nintendo Game Boy and Game Boy Color consoles. This library is
       designed to be portable and easily integrated into other applications, and
       serves as the emulation core backing the GABLE engine.
 - **`GBMU`** - Game Boy Emulator Frontend
-    - This is a C++23-compliant console application which serves as a frontend
+    - This is a console application which serves as a frontend
       for the `GB` emulation core library. This application provides a user
       interface for loading and running Game Boy (Color) software, and
       demonstrates the capabilities of the `GB` library. This application is

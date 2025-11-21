@@ -23,7 +23,7 @@ newoption {
 workspace "2026-GABLE"
     
     -- Language and Standard
-    cdialect "C23"
+    language "C++"
     cppdialect "C++23"
 
     -- Extra Warnings; Treat Warnings as Errors
@@ -42,7 +42,7 @@ workspace "2026-GABLE"
 
     -- Build Configurations
     configurations { "debug", "release", "distribute" }
-    startproject "gablemu"
+    startproject "gbmu"
 
     -- Configuration Settings
     filter { "configurations:debug" }
@@ -74,22 +74,20 @@ project "gb"
         defines { "GB_BUILD_SHARED" }
     end
 
-    language "C"
     location "./build"
     targetdir "./build/bin/%{cfg.system}-%{cfg.buildcfg}"
     objdir "./build/obj/%{cfg.system}-%{cfg.buildcfg}/%{prj.name}"
-    files { "./projects/GB/**.h", "./projects/GB/**.c" }
+    files { "./projects/GB/**.hpp", "./projects/GB/**.cpp" }
     includedirs { "./projects" }
 
 -- Project: `gbt` - Game Boy Emulator Core Library Test Suite ------------------
 
 project "gbt"
     kind "ConsoleApp"
-    language "C"
     location "./build"
     targetdir "./build/bin/%{cfg.system}-%{cfg.buildcfg}"
     objdir "./build/obj/%{cfg.system}-%{cfg.buildcfg}/%{prj.name}"
-    files { "./projects/GBT/**.h", "./projects/GBT/**.c" }
+    files { "./projects/GBT/**.hpp", "./projects/GBT/**.cpp" }
     includedirs { "./projects" }
     links { "gb" }
 
@@ -97,7 +95,6 @@ project "gbt"
 
 project "gbmu"
     kind "ConsoleApp"
-    language "C++"
     location "./build"
     targetdir "./build/bin/%{cfg.system}-%{cfg.buildcfg}"
     objdir "./build/obj/%{cfg.system}-%{cfg.buildcfg}/%{prj.name}"
