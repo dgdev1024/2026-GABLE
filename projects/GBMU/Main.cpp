@@ -1,7 +1,7 @@
-#include <print>
+#include <GBMU/Application.hpp>
 
-auto main (int argc, char** argv) -> int 
+auto main (int argc, char** argv) -> int
 {
-    std::print("Hello, World!\n");
-    return 0;
+    gbmu::Application app { argc, argv };
+    return app.start();
 }
